@@ -8,7 +8,7 @@
 # Every target runs from the repo root. Nothing here requires you to cd into a stack.
 #
 # Written for GNU Make 3.81, which is what macOS ships. No .ONESHELL, no $(file), no
-# .RECIPEPREFIX — if you are editing this on a machine with make 4.x, resist the upgrades.
+# .RECIPEPREFIX. If you are editing this on a machine with make 4.x, resist the upgrades.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -79,17 +79,17 @@ stacks:
 
 init-config:
 	@if [ -f config.env ]; then \
-	  printf "$(C_YEL)config.env already exists — not overwriting$(C_OFF)\n"; \
+	  printf "$(C_YEL)config.env already exists, not overwriting$(C_OFF)\n"; \
 	else \
 	  cp config.env.example config.env; \
-	  printf "$(C_GRN)created config.env$(C_OFF) — fill it in, then: make ids\n"; \
+	  printf "$(C_GRN)created config.env$(C_OFF). Fill it in, then: make ids\n"; \
 	fi
 
 ids:
 	@printf "$(C_BOLD)Organizations$(C_OFF)\n"
-	@gcloud organizations list 2>/dev/null || printf "  (not authorized — run: make auth)\n"
+	@gcloud organizations list 2>/dev/null || printf "  (not authorized, run: make auth)\n"
 	@printf "\n$(C_BOLD)Billing accounts$(C_OFF)\n"
-	@gcloud billing accounts list 2>/dev/null || printf "  (not authorized — run: make auth)\n"
+	@gcloud billing accounts list 2>/dev/null || printf "  (not authorized, run: make auth)\n"
 	@printf "\n$(C_BOLD)Cloud Identity customer ID$(C_OFF)  (for domain-restricted sharing)\n"
 	@gcloud organizations list --format="value(owner.directoryCustomerId)" 2>/dev/null | sed 's/^/  /' || true
 	@printf "\nPut these in config.env as TF_VAR_org_id, TF_VAR_billing_account, TF_VAR_customer_id\n"
@@ -116,7 +116,7 @@ bootstrap-migrate:
 up:
 	@for s in $(FOUNDATION); do scripts/tf.sh $$s apply || exit 1; done
 	@printf "\n$(C_GRN)Foundation up.$(C_OFF)  Idle cost is under \$$1/month.\n"
-	@printf "Next: make lab-up  (brings up the network — this is the part that costs money)\n"
+	@printf "Next: make lab-up  (brings up the network, the part that costs money)\n"
 
 lab-up:
 	@for s in $(LAB); do scripts/tf.sh $$s apply || exit 1; done
@@ -126,7 +126,7 @@ lab-up:
 
 lab-down:
 	@for s in $(LAB_DOWN); do scripts/tf.sh $$s destroy || exit 1; done
-	@printf "\n$(C_GRN)Lab down.$(C_OFF) Foundation still standing. KMS keys remain — they cannot be deleted in GCP.\n"
+	@printf "\n$(C_GRN)Lab down.$(C_OFF) Foundation still up. KMS keys remain; GCP cannot delete them.\n"
 
 down: lab-down
 	@scripts/tf.sh 2-projects destroy
@@ -158,17 +158,17 @@ org-check:
 	    printf "config.env TF_VAR_org_id is %s\n" "$$TF_VAR_org_id"; \
 	    [ "$$ORG_WRITES_ALLOWED_FOR" = "$$TF_VAR_org_id" ] \
 	      && printf "$(C_GRN)they match$(C_OFF)\n" \
-	      || printf "$(C_RED)MISMATCH — every org target will refuse$(C_OFF)\n"; \
+	      || printf "$(C_RED)MISMATCH, every org target will refuse$(C_OFF)\n"; \
 	  else \
 	    printf "$(C_GRN)org-node writes blocked$(C_OFF) (folder-scoped mode)\n"; \
 	  fi; \
-	else printf "no config.env — run: make init-config\n"; fi
+	else printf "no config.env, run: make init-config\n"; fi
 
 org-up:
 	@printf "$(C_RED)stacks/1-org writes organization policy.$(C_OFF)\n"
 	@printf "Every folder in the target organization will inherit it, including any you did not build.\n"
 	@printf "Type the organization's numeric ID to continue: "
-	@read -r ans; . ./config.env; [ "$$ans" = "$$ORG_WRITES_ALLOWED_FOR" ] || { printf "$(C_RED)that is not the unlocked org id — aborted$(C_OFF)\n"; exit 1; }
+	@read -r ans; . ./config.env; [ "$$ans" = "$$ORG_WRITES_ALLOWED_FOR" ] || { printf "$(C_RED)that is not the unlocked org id, aborted$(C_OFF)\n"; exit 1; }
 	@scripts/tf.sh 1-org apply
 
 org-down:
@@ -225,7 +225,7 @@ fmt:
 	@$(TF) fmt -recursive .
 
 fmt-check:
-	@$(TF) fmt -check -recursive . || { printf "$(C_RED)unformatted — run: make fmt$(C_OFF)\n"; exit 1; }
+	@$(TF) fmt -check -recursive . || { printf "$(C_RED)unformatted, run: make fmt$(C_OFF)\n"; exit 1; }
 
 validate:
 	@for s in $(STACKS); do scripts/tf.sh $$s validate || exit 1; done
@@ -234,7 +234,7 @@ lint: fmt-check validate
 	@if command -v shellcheck >/dev/null 2>&1; then \
 	  shellcheck scripts/*.sh && printf "$(C_GRN)shellcheck clean$(C_OFF)\n"; \
 	else \
-	  printf "$(C_DIM)shellcheck not installed — skipping$(C_OFF)\n"; \
+	  printf "$(C_DIM)shellcheck not installed, skipping$(C_OFF)\n"; \
 	fi
 
 guard-test:

@@ -1,10 +1,7 @@
-# Stage 1 — foundation.
+# Stage 1: org policy, audit collection, incident contacts.
 #
-# The controls that should outlive any individual experiment: org policy, audit collection,
-# incident contacts. Cheap enough to leave running (well under $1/month at lab volume), which
-# is why it is separated from stage 3, where the network lives and the meter runs.
-#
-# Everything attaches at folders/${var.folder_id}. Nothing here names the organization.
+# Split from stage 3 because this tier is under $1/month and stays up, while the network tier
+# is not. Everything attaches at folders/${var.folder_id}.
 
 locals {
   parent = "folders/${var.folder_id}"
@@ -16,8 +13,6 @@ locals {
   }
 }
 
-# --- Organization policy ---------------------------------------------------------------------
-
 module "org_policies" {
   source = "../../modules/org-policy-baseline"
 
@@ -26,11 +21,9 @@ module "org_policies" {
   enforce_cmek             = var.enforce_cmek
   boolean_policy_overrides = var.boolean_policy_overrides
 
-  # Matches the budget posture: single-region US keeps egress and storage predictable.
+  # Single-region US keeps egress and storage predictable.
   allowed_locations = ["in:us-locations"]
 }
-
-# --- Audit ---------------------------------------------------------------------------------------
 
 module "audit_logging" {
   source = "../../modules/audit-logging"
@@ -42,15 +35,12 @@ module "audit_logging" {
   retention_days = var.audit_retention_days
   labels         = local.labels
 
-  # Left unlocked deliberately — see the module's variables.tf. A locked bucket strands
-  # `make destroy` for a year.
+  # Locking this strands `make destroy` for a year. See the module's variables.tf.
   lock_retention = false
 }
 
-# --- Incident routing ------------------------------------------------------------------------------
-#
-# IR-6. Without this, Google's security notifications go to the org's default contacts, which
-# for a personal org is one address that may not be watched.
+# Without these, Google's security notifications go to the org default contacts, which on a
+# personal org is one address nobody watches. IR-6
 
 resource "google_essential_contacts_contact" "security" {
   count = var.security_contact_email != null ? 1 : 0
@@ -70,18 +60,14 @@ resource "google_essential_contacts_contact" "billing" {
   notification_category_subscriptions = ["BILLING"]
 }
 
-# --- Organization-level read ------------------------------------------------------------------------
-#
-# Data sources only. These observe the organization to confirm the folder is where it is
-# supposed to be; they cannot modify anything. This is the "org-level read" half of the
-# blast-radius rule.
+# Data sources only. These read the organization to confirm the folder is where it should be
+# and cannot modify anything.
 
 data "google_folder" "playground" {
   folder = local.parent
 }
 
-# Fails the plan if the folder ever ends up somewhere other than directly under an
-# organization — for instance nested under another team's folder after a console drag.
+# Fails the plan if the folder is moved out from directly under the organization.
 check "folder_is_org_child" {
   assert {
     condition     = can(regex("^organizations/[0-9]+$", data.google_folder.playground.parent))

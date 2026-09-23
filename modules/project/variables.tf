@@ -18,7 +18,7 @@ variable "billing_account" {
 }
 
 variable "activate_apis" {
-  description = "APIs to enable. Keep this tight — CM-7 least functionality, and every enabled API is attack surface you have to reason about."
+  description = "APIs to enable. Keep this tight: CM-7 least functionality, and every enabled API is attack surface you have to reason about."
   type        = list(string)
   default     = []
 }
@@ -30,7 +30,7 @@ variable "enable_data_access_logs" {
 }
 
 variable "data_access_log_exemptions" {
-  description = "Members exempted from data access logging. Normally empty — an exemption is a hole in AU-12 and should be justified in the control mapping."
+  description = "Members exempted from data access logging. Normally empty, since an exemption is a hole in AU-12 and should be justified in the control mapping."
   type        = list(string)
   default     = []
 }

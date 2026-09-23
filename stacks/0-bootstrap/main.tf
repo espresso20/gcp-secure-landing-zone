@@ -1,17 +1,10 @@
-# Stage 0 — bootstrap.
+# Stage 0: playground folder, seed project, state bucket.
 #
-# Creates the three things every later stage assumes exist:
+# The only stack that names the organization, and only as the parent of a new folder. Creating
+# a child does not change what the organization applies to its existing children, which is why
+# scripts/guard.sh exempts google_folder and blocks everything else reaching for organizations/.
 #
-#   1. The playground folder, directly under the organization.
-#   2. A seed project to hold Terraform state and shared tooling.
-#   3. The state bucket itself.
-#
-# This is the only stack that names the organization, and it names it once, as the parent of a
-# new folder. Creating a child does not alter anything the organization already applies to its
-# other children — which is why scripts/guard.sh exempts google_folder specifically and blocks
-# everything else that reaches for organizations/.
-#
-# Run once. After `make bootstrap-migrate` this stack's own state lives in the bucket it made.
+# Run once. `make bootstrap-migrate` then moves this stack's state into the bucket it created.
 
 locals {
   labels = {
@@ -21,20 +14,15 @@ locals {
   }
 }
 
-# --- The boundary -------------------------------------------------------------------------
-
 resource "google_folder" "playground" {
   display_name = var.folder_name
   parent       = "organizations/${var.org_id}"
 
-  # Everything this repo builds lives under this ID. If it ever changes, every other stack is
-  # pointing at the wrong place, so it is worth being loud about.
+  # Every other stack is keyed to this ID.
   lifecycle {
     prevent_destroy = true
   }
 }
-
-# --- Seed project ----------------------------------------------------------------------------
 
 resource "random_id" "seed" {
   byte_length = 2
@@ -78,11 +66,8 @@ resource "google_project_service" "seed" {
   disable_dependent_services = false
 }
 
-# --- State ---------------------------------------------------------------------------------------
-#
-# Versioning is not optional here. A corrupted or truncated state file with no prior version is
-# an afternoon of `terraform import`, and this bucket is the single point of failure for every
-# other stack.
+# State bucket. Versioning is not optional: a truncated state file with no prior generation is
+# an afternoon of `terraform import`.
 
 resource "google_storage_bucket" "state" {
   name     = "${var.prefix}-tfstate-${random_id.seed.hex}"
@@ -97,8 +82,7 @@ resource "google_storage_bucket" "state" {
     enabled = true
   }
 
-  # Keep 10 generations, expire the rest. Unbounded versioning on a state bucket quietly grows
-  # forever; ten is more than enough to recover from anything recoverable.
+  # Unbounded versioning on a state bucket grows forever. Ten generations is plenty.
   lifecycle_rule {
     condition {
       num_newer_versions = 10
@@ -107,24 +91,21 @@ resource "google_storage_bucket" "state" {
     action { type = "Delete" }
   }
 
-  # `make nuke` must not be able to take the state with it.
+  # `make nuke` must not take the state with it.
   lifecycle {
     prevent_destroy = true
   }
 }
 
-# --- Folder-level budget -----------------------------------------------------------------------
-#
-# Covers everything under the playground folder, including projects that do not exist yet. This
-# is the backstop for the per-project budgets the project module sets.
+# Folder-level budget, covering projects that do not exist yet. Backstop for the per-project
+# budgets in modules/project.
 
 resource "google_billing_budget" "folder" {
   billing_account = replace(var.billing_account, "billingAccounts/", "")
-  display_name    = "${var.prefix} study playground — folder total"
+  display_name    = "${var.prefix} study playground, folder total"
 
   budget_filter {
-    # Empty projects list means the whole billing account; scoping by label keeps this to
-    # resources this repo created rather than anything else on the account.
+    # An empty projects list means the whole billing account, so scope by label instead.
     labels = {
       purpose = "study-playground"
     }

@@ -30,10 +30,10 @@ die()  { printf '\n\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 
 [[ -d "$STACK_DIR" ]] || die "no such stack: $STACK  (try: make stacks)"
 
-# --- Configuration ---------------------------------------------------------------------------
+# Configuration
 
 # fmt and validate are static checks. They must work in a fresh clone, before anyone has an
-# account configured — otherwise CI cannot lint the repo and neither can a reviewer.
+# account configured, otherwise CI cannot lint the repo and neither can a reviewer.
 NEEDS_CONFIG=1
 case "$ACTION" in fmt|validate) NEEDS_CONFIG=0 ;; esac
 
@@ -56,15 +56,14 @@ export TF_VAR_state_bucket="${TF_VAR_state_bucket:-}"
 # cannot be.
 export TF_VAR_org_writes_allowed_for="${ORG_WRITES_ALLOWED_FOR:-}"
 
-# 1-org is the one stack that writes at the organization node. Refusing it here — before init,
-# before any API call — means the expensive path is never even attempted in an org that has not
-# been deliberately unlocked.
+# 1-org is the one stack that writes at the organization node. Refusing it here, before init
+# and before any API call, means nothing is attempted in an org that was not unlocked.
 if [[ "$STACK" == "1-org" && "$ACTION" != "fmt" && "$ACTION" != "validate" ]]; then
   if [[ -z "${ORG_WRITES_ALLOWED_FOR:-}" ]]; then
     die "stacks/1-org writes at the organization node, and ORG_WRITES_ALLOWED_FOR is unset in config.env.
 
 This stack applies organization policy, which every folder in the organization
-inherits — including anything you did not build. It is intended for a dedicated
+inherits, including anything you did not build. It is intended for a dedicated
 lab organization containing nothing you would miss.
 
 If that is what you have, set its numeric ID:
@@ -85,11 +84,11 @@ mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
 export TF_IN_AUTOMATION=1
 
-# --- Required inputs per action ------------------------------------------------------------------
+# Required inputs per action
 
 require_var() {
   local name="$1" hint="$2"
-  [[ -n "${!name:-}" ]] || die "$name is not set in config.env — $hint"
+  [[ -n "${!name:-}" ]] || die "$name is not set in config.env. $hint"
 }
 
 if [[ "$ACTION" != "fmt" && "$ACTION" != "validate" ]]; then
@@ -105,7 +104,7 @@ if [[ "$STACK" != "0-bootstrap" && "$ACTION" != "fmt" && "$ACTION" != "validate"
   require_var GCP_SEED_PROJECT    "run 'make bootstrap' first"
 fi
 
-# --- Backend ----------------------------------------------------------------------------------------
+# Backend
 
 init_stack() {
   local extra=()
@@ -128,12 +127,12 @@ ensure_init() {
   fi
 }
 
-# Static validation does not need — and must not require — a reachable state bucket.
+# Static validation must not require a reachable state bucket.
 ensure_init_local() {
   ( cd "$STACK_DIR" && "$TF" init -backend=false -input=false >/dev/null )
 }
 
-# --- Actions --------------------------------------------------------------------------------------------
+# Actions
 
 case "$ACTION" in
 

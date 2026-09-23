@@ -4,7 +4,7 @@ variable "org_id" {
 
   validation {
     condition     = can(regex("^[0-9]+$", var.org_id))
-    error_message = "org_id must be numeric — run `make ids` to find it."
+    error_message = "org_id must be numeric. Run `make ids` to find it."
   }
 }
 
@@ -17,7 +17,7 @@ variable "prefix" {
 
   validation {
     condition     = can(regex("^[a-z][a-z0-9]{2,9}$", var.prefix))
-    error_message = "prefix must be 3-10 lowercase alphanumerics starting with a letter — it becomes part of globally unique project IDs."
+    error_message = "prefix must be 3-10 lowercase alphanumerics starting with a letter, because it becomes part of globally unique project IDs."
   }
 }
 

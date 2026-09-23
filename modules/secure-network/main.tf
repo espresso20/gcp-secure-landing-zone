@@ -1,20 +1,5 @@
-# Shared VPC host network for the playground.
-#
-# Shape, and why:
-#
-#   Custom-mode VPC        auto-mode creates a subnet in every region with overlapping-prone
-#                          ranges and no say in CIDR. CM-7, and it is the exam answer.
-#   No external IPs        org policy denies them; the way in is IAP TCP forwarding. AC-17.
-#   Private Google Access  so instances with no public IP can still reach Google APIs. Without
-#                          it a private instance cannot even pull from Artifact Registry.
-#   Flow logs              AU-12. Sampled at 0.5 to halve the cost of the one thing here that
-#                          scales with traffic.
-#   Hierarchical firewall  attached at the FOLDER, so it applies to every VPC in every project
-#                          beneath it and cannot be overridden by a project-level rule. SC-7.
-#
-# Cost: the NAT gateway dominates. See variables.tf.
-
-# --- The network -----------------------------------------------------------------------------
+# Shared VPC host network. Custom-mode, no external IPs, ingress via IAP only.
+# NAT dominates the cost of this module; see variables.tf.
 
 resource "google_compute_network" "vpc" {
   project                 = var.project_id
@@ -37,7 +22,7 @@ resource "google_compute_subnetwork" "subnets" {
   network       = google_compute_network.vpc.id
   ip_cidr_range = each.value.cidr
 
-  # SC-7 — instances reach *.googleapis.com over internal addressing rather than the internet.
+  # Without this, an instance with no external IP cannot reach *.googleapis.com at all. SC-7
   private_ip_google_access = true
 
   dynamic "secondary_ip_range" {
@@ -48,16 +33,14 @@ resource "google_compute_subnetwork" "subnets" {
     }
   }
 
-  # AU-12 — the network half of the audit story. INTERVAL_10_MIN plus 0.5 sampling is the
-  # cheap-but-useful setting; drop to 0.1 if this ever shows up on a bill.
+  # AU-12. Flow logs are the only thing here that scales with traffic; drop sampling to 0.1
+  # if it shows up on a bill.
   log_config {
     aggregation_interval = "INTERVAL_10_MIN"
     flow_sampling        = 0.5
     metadata             = "INCLUDE_ALL_METADATA"
   }
 }
-
-# --- Egress ------------------------------------------------------------------------------------
 
 resource "google_compute_router" "router" {
   count = var.enable_nat ? 1 : 0
@@ -79,19 +62,16 @@ resource "google_compute_router_nat" "nat" {
   nat_ip_allocate_option             = "AUTO_ONLY"
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 
-  # AU-12 — without this you know a VM egressed but not to where.
   log_config {
     enable = true
     filter = "ERRORS_ONLY"
   }
 }
 
-# --- Hierarchical firewall policy ----------------------------------------------------------------
+# Hierarchical firewall policy.
 #
-# Evaluated BEFORE any VPC firewall rule in any project under the folder, and a project owner
-# cannot override it. This is the difference between a policy and a suggestion.
-#
-# Rule numbering leaves gaps on purpose so rules can be inserted later without renumbering.
+# Evaluated before any VPC firewall rule in any project under the folder, and a project owner
+# cannot override it. Priorities leave gaps so rules can be inserted without renumbering.
 
 resource "google_compute_firewall_policy" "folder" {
   parent      = "folders/${var.folder_id}"
@@ -99,8 +79,7 @@ resource "google_compute_firewall_policy" "folder" {
   description = "Folder-wide baseline. Applies beneath the study folder only (NIST SC-7, AC-17)."
 }
 
-# AC-17 — the sanctioned remote access path. IAP brokers the connection, so the instance needs
-# no public IP and the access decision is an IAM decision.
+# 35.235.240.0/20 is Google's fixed IAP forwarding range. AC-17
 resource "google_compute_firewall_policy_rule" "allow_iap" {
   firewall_policy = google_compute_firewall_policy.folder.id
   priority        = 1000
@@ -110,7 +89,6 @@ resource "google_compute_firewall_policy_rule" "allow_iap" {
   description     = "IAP TCP forwarding for SSH and RDP."
 
   match {
-    # Fixed, documented Google-owned range. Not arbitrary.
     src_ip_ranges = ["35.235.240.0/20"]
     layer4_configs {
       ip_protocol = "tcp"
@@ -119,7 +97,6 @@ resource "google_compute_firewall_policy_rule" "allow_iap" {
   }
 }
 
-# SC-7 — health checks and the load balancer data plane.
 resource "google_compute_firewall_policy_rule" "allow_health_checks" {
   firewall_policy = google_compute_firewall_policy.folder.id
   priority        = 1100
@@ -136,8 +113,6 @@ resource "google_compute_firewall_policy_rule" "allow_health_checks" {
   }
 }
 
-# SC-7 — default deny. Everything above this is an explicit exception; everything else stops
-# here. Priority is deliberately far from the allow rules so there is room between them.
 resource "google_compute_firewall_policy_rule" "deny_all_ingress" {
   firewall_policy = google_compute_firewall_policy.folder.id
   priority        = 65000
@@ -160,8 +135,6 @@ resource "google_compute_firewall_policy_association" "folder" {
   name              = "${var.prefix}-hierarchical-assoc"
 }
 
-# --- Private DNS ----------------------------------------------------------------------------------
-
 resource "google_dns_managed_zone" "private" {
   count = var.enable_dns ? 1 : 0
 
@@ -179,9 +152,8 @@ resource "google_dns_managed_zone" "private" {
   }
 }
 
-# Sends *.googleapis.com to restricted.googleapis.com (199.36.153.4/30), which only resolves
-# inside Google's network. This is the DNS half of Private Google Access and a prerequisite for
-# VPC Service Controls later. SC-7.
+# DNS half of Private Google Access: sends *.googleapis.com to the restricted VIPs
+# (199.36.153.4/30), which resolve only inside Google's network. Prerequisite for VPC-SC.
 resource "google_dns_managed_zone" "private_googleapis" {
   count = var.enable_dns ? 1 : 0
 

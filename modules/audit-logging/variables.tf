@@ -30,7 +30,7 @@ variable "retention_days" {
 }
 
 variable "lock_retention" {
-  description = "Apply a GCS retention LOCK to the archive bucket. AU-9 (protection of audit information) effectively wants this. It is IRREVERSIBLE — a locked bucket cannot be deleted until every object ages out, which will strand `make destroy`. Off by default for that reason."
+  description = "Apply a GCS retention LOCK to the archive bucket. AU-9 (protection of audit information) effectively wants this. It is IRREVERSIBLE: a locked bucket cannot be deleted until every object ages out, which strands `make destroy`. Off by default for that reason."
   type        = bool
   default     = false
 }

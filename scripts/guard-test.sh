@@ -4,14 +4,10 @@
 #
 #   scripts/guard-test.sh      (or: make guard-test)
 #
-# The guard is the only thing standing between a careless edit and a folder inheriting an org
-# policy it never asked for. A guard nobody tests is a guard nobody should
-# rely on, so this runs it against fixtures representing the mistakes it exists to catch.
+# Runs guard.sh against fixtures representing the mistakes it exists to catch. Run it after
+# touching guard.sh; preflight.sh also runs it before every bootstrap.
 #
-# The fixtures use a fake protected ID. Your real ones live in config.env and are never
-# committed.
-#
-# Run this after touching guard.sh. scripts/preflight.sh runs it before every bootstrap.
+# The fixtures use a fake protected ID. Real ones live in config.env and are never committed.
 
 set -uo pipefail
 
@@ -19,8 +15,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURES="$(mktemp -d)"
 trap 'rm -rf "$FIXTURES"' EXIT
 
-# Deliberately not a real project ID. The point is to exercise the matcher, not to record
-# a real project ID in a public repo.
+# Not a real project ID.
 FAKE_PROTECTED="protected-prod-example"
 
 PASS=0
@@ -29,11 +24,10 @@ FAIL=0
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
 
-# Runs the guard against a fixture and checks the exit code.
 #   expect_block <name> <json>   guard must REFUSE
 #   expect_allow <name> <json>   guard must PERMIT
-# ORG_ALLOW is exported on every call, empty by default, so each fixture states the org-mode
-# setting it is testing rather than inheriting whatever is in config.env.
+# Exported on every call, empty by default, so each fixture states the org-mode setting it is
+# testing rather than inheriting config.env.
 ORG_ALLOW=""
 
 run_guard() {
@@ -46,7 +40,7 @@ run_guard() {
 expect_block() {
   local name="$1" json="$2"
   if run_guard "$json"; then
-    fail "$name — guard ALLOWED this and should not have"
+    fail "$name: guard ALLOWED this and should not have"
   else
     pass "$name"
   fi
@@ -57,11 +51,11 @@ expect_allow() {
   if run_guard "$json"; then
     pass "$name"
   else
-    fail "$name — guard BLOCKED this and should not have"
+    fail "$name: guard BLOCKED this and should not have"
   fi
 }
 
-# Same two, with org mode enabled for a specific organization.
+# Same two, with org mode enabled for one organization.
 expect_block_in_org() {
   local name="$1" org="$2" json="$3"
   local prev="$ORG_ALLOW"; ORG_ALLOW="$org"
@@ -78,7 +72,7 @@ expect_allow_in_org() {
 
 printf '\n\033[1mBlast-radius guard self-test\033[0m\n\n'
 
-# --- Things that must be blocked -----------------------------------------------------------
+# Must be blocked
 
 expect_block "org policy attached at the organization node" '{
   "resource_changes":[{"address":"google_org_policy_policy.oops","type":"google_org_policy_policy",
@@ -113,10 +107,8 @@ expect_block "access context manager policy (org-scoped)" '{
   "resource_changes":[{"address":"google_access_context_manager_access_policy.x","type":"google_access_context_manager_access_policy",
   "change":{"actions":["create"],"after":{"parent":"organizations/123"}}}]}'
 
-# --- Things that must be allowed -------------------------------------------------------------
-#
-# These matter as much as the blocks. A guard that refuses everything is indistinguishable from
-# a broken repo, and the folder-creation case actually regressed once during development.
+# Must be allowed. These matter as much as the blocks: a guard that refuses everything is
+# indistinguishable from a broken repo, and the folder-creation case regressed once.
 
 expect_allow "creating the playground folder under the org" '{
   "resource_changes":[{"address":"google_folder.playground","type":"google_folder",
@@ -147,14 +139,8 @@ expect_allow "a read-only data source referencing the org" '{
 
 expect_allow "an empty plan" '{"resource_changes":[]}'
 
-# --- Organization mode ---------------------------------------------------------------------
-#
-# ORG_WRITES_ALLOWED_FOR names one organization that may receive writes at its own node. The
-# property worth testing is not "org writes work" — it is that unlocking ONE organization does
-# not unlock any other, and that anything ambiguous still fails closed.
-#
-# LAB_ORG is the organization the fixtures pretend to have unlocked. OTHER_ORG stands in for any
-# organization that must stay untouched.
+# Organization mode. What matters here is not that org writes work, but that unlocking one
+# organization does not unlock any other, and that anything ambiguous still fails closed.
 
 LAB_ORG="111111111111"
 OTHER_ORG="999999999999"
@@ -197,7 +183,7 @@ expect_allow_in_org "folder-scoped policy, while org mode is enabled" "$LAB_ORG"
   "resource_changes":[{"address":"google_org_policy_policy.ok","type":"google_org_policy_policy",
   "change":{"actions":["create"],"after":{"name":"folders/999/policies/x","parent":"folders/999"}}}]}'
 
-# --- Verdict ------------------------------------------------------------------------------------
+# Verdict
 
 printf '\n'
 if [[ $FAIL -eq 0 ]]; then

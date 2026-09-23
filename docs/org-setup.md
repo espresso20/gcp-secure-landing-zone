@@ -4,7 +4,7 @@ A checklist for standing up a second GCP organization that this repo can safely 
 **organization** level. An organization that already holds workloads is never a safe place to
 do that, so this calls for a second one.
 
-Work top to bottom. The whole thing is about 45 minutes, most of it waiting on DNS.
+Work top to bottom. It takes about 45 minutes, most of it waiting on DNS.
 
 ---
 
@@ -13,7 +13,7 @@ Work top to bottom. The whole thing is about 45 minutes, most of it waiting on D
 You need:
 
 - A domain you can add DNS records to, that is **not** already tied to a Cloud Identity or
-  Google Workspace account. A different TLD of a domain you already own is fine —
+  Google Workspace account. A different TLD of a domain you already own is fine, since
   `example.dev` and `example.com` are unrelated as far as Google is concerned.
 - A credit card for the domain registration. Cloud Identity Free itself costs nothing.
 - Your existing GCP billing account, and `roles/billing.user` on it.
@@ -23,7 +23,7 @@ locked to one organization.
 
 ---
 
-## Part 1 — Domain
+## Part 1: domain
 
 - [ ] **1.1** Confirm the domain is unregistered. No NS records is a reliable signal:
       ```bash
@@ -33,7 +33,7 @@ locked to one organization.
       delegation at the registry, even parked ones.
 
 - [ ] **1.2** Register it. Porkbun, Namecheap and Cloudflare Registrar are all fine. Check the
-      **renewal** price, not the first-year promo — some TLDs advertise $1 and renew at $30.
+      renewal price, not the first-year promo. Some TLDs advertise $1 and renew at $30.
 
 - [ ] **1.3** Decide where DNS lives. Whatever the registrar gives you is fine; you only need
       to add one TXT record. If you already run DNS somewhere (NS1, Cloudflare, Netlify),
@@ -43,15 +43,15 @@ locked to one organization.
       ```bash
       dig +short NS yourdomain.dev
       ```
-      Should now return your nameservers. If it is empty, wait — propagation can take a few
+      Should now return your nameservers. If it is empty, wait. Propagation can take a few
       hours, and every later step depends on this working.
 
 ---
 
-## Part 2 — Cloud Identity account
+## Part 2: Cloud Identity account
 
-> **This is the step that goes wrong.** You are creating a **brand-new Cloud Identity account**.
-> You are *not* adding a domain to the account you already have.
+> **This is the step that goes wrong.** You are creating a brand-new Cloud Identity account.
+> You are not adding a domain to the account you already have.
 >
 > Adding `yourdomain.dev` as a secondary or alias domain of your existing tenant looks
 > reasonable in the admin console and is completely wrong: the domain gets absorbed, you get
@@ -62,7 +62,7 @@ locked to one organization.
 > in the wrong flow. Back out.
 
 - [ ] **2.1** Go to the Cloud Identity **Free** signup. Search for "Cloud Identity Free signup"
-      if the direct link has moved — Google reshuffles these URLs. Make sure you land on the
+      if the direct link has moved, because Google reshuffles these URLs. Make sure you land on the
       **Free** edition, not Premium and not Workspace. Premium is a paid tier you do not need,
       and Workspace adds Gmail, which you actively do not want.
 
@@ -88,13 +88,13 @@ locked to one organization.
 
 ---
 
-## Part 3 — The organization
+## Part 3: the organization
 
 The GCP organization is **created automatically** the first time you access GCP with the new
 account. There is no "create organization" button, and looking for one wastes ten minutes.
 
-- [ ] **3.1** Open an incognito or separate browser profile — you are about to be signed into
-      two Google accounts and mixing them is how you apply the wrong thing to the wrong place.
+- [ ] **3.1** Open an incognito or separate browser profile. You are about to be signed into two
+      Google accounts, and mixing them is how you apply the wrong thing to the wrong place.
 
 - [ ] **3.2** Go to `console.cloud.google.com` and sign in as `admin@yourdomain.dev`.
       Accept the terms. The organization resource is created behind the scenes.
@@ -133,7 +133,7 @@ account. There is no "create organization" button, and looking for one wastes te
 
 ---
 
-## Part 4 — Billing
+## Part 4: billing
 
 - [ ] **4.1** Find your existing billing account ID, signed in as your **normal** account:
       ```bash
@@ -155,7 +155,7 @@ account. There is no "create organization" button, and looking for one wastes te
       gcloud config configurations activate lab   # see Part 5
       gcloud billing accounts list
       ```
-      The account should now be visible. If it is not, the binding has not propagated — give
+      The account should now be visible. If it is not, the binding has not propagated yet. Give
       it a minute.
 
 - [ ] **4.4** Set a **budget alert on the lab organization** before you build anything. You are
@@ -164,7 +164,7 @@ account. There is no "create organization" button, and looking for one wastes te
 
 ---
 
-## Part 5 — Two identities, one gcloud
+## Part 5: two identities, one gcloud
 
 You now have two Google accounts that both talk to GCP, and exactly one `gcloud` install.
 Named configurations keep them apart. This is also squarely on the ACE exam.
@@ -193,11 +193,12 @@ Named configurations keep them apart. This is also squarely on the ACE exam.
 > `gcloud auth application-default login` overwrites ADC for every configuration, and Terraform
 > uses ADC. So switching configurations changes what `gcloud` does but **not necessarily what
 > Terraform does**. `scripts/auth.sh` checks that the two agree and refuses to proceed when they
-> do not — this is the single most dangerous inconsistency in a two-org setup.
+> do not. This is the most dangerous inconsistency in a two-org setup, because nothing on
+> screen tells you it is happening.
 
 ---
 
-## Part 6 — Point the repo at it
+## Part 6: point the repo at it
 
 - [ ] **6.1** Use a separate checkout, or at minimum a separate `config.env`. Two orgs sharing
       one config file is how you apply the lab's org policies to the wrong place.
@@ -213,8 +214,8 @@ Named configurations keep them apart. This is also squarely on the ACE exam.
       # Unlocks organization-node writes for this org and no other.
       ORG_WRITES_ALLOWED_FOR=<the same lab org numeric id>
 
-      # Nothing in the lab org to protect, but keep prod listed anyway — it costs nothing
-      # and this file gets copied between machines.
+      # Nothing in the lab org to protect, but keep the real ones listed anyway. It costs
+      # nothing, and this file gets copied between machines.
       PROTECTED_IDS="<your prod project ids>"
       ```
 
@@ -237,7 +238,7 @@ Named configurations keep them apart. This is also squarely on the ACE exam.
       ```bash
       make bootstrap
       make up
-      make apply STACK=1-org      # the org-level stage — only runs in an unlocked org
+      make apply STACK=1-org      # the org-level stage, only runs in an unlocked org
       ```
 
 ---
@@ -251,8 +252,8 @@ You are done when all of these are true:
 - [ ] `gcloud config configurations list` shows `default` and `lab`
 - [ ] `make preflight` passes with the `lab` configuration active
 - [ ] `make guard-test` passes 23/23
-- [ ] Switching to `default` and running `make preflight` **fails** on the org mismatch —
-      this is the safety property working, not a problem
+- [ ] Switching to `default` and running `make preflight` fails on the org mismatch. That is
+      the safety property working, not a problem
 - [ ] A budget alert exists on the lab org
 
 ---

@@ -1,9 +1,9 @@
-# Local configuration — account identifiers, not secrets, but not ours to publish.
+# Local configuration. Account identifiers, not secrets, but not ours to publish either.
 config.env
 
 # Terraform
 .terraform/
-# .terraform.lock.hcl is intentionally NOT ignored — provider checksums belong in git.
+# .terraform.lock.hcl is intentionally NOT ignored. Provider checksums belong in git.
 *.tfstate
 *.tfstate.*
 *.tfplan
@@ -25,7 +25,7 @@ terraform.tfvars
 # Build artifacts from the Makefile
 .build/
 
-# Credentials — nothing here should ever exist, but if it does, it stays local.
+# Credentials. Nothing here should ever exist, but if it does, it stays local.
 *-sa-key.json
 *credentials*.json
 !config.env.example

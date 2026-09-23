@@ -47,22 +47,22 @@ if [[ -f "$REPO_ROOT/config.env" ]]; then
 
   [[ -n "${TF_VAR_customer_id:-}" ]] \
     && ok "customer_id     $TF_VAR_customer_id" \
-    || warn "TF_VAR_customer_id empty — domain-restricted sharing (AC-3/AC-20) will be skipped"
+    || warn "TF_VAR_customer_id empty, so domain-restricted sharing (AC-3/AC-20) is skipped"
 else
-  bad "config.env not found — run: make init-config"
+  bad "config.env not found. Run: make init-config"
 fi
 
 step "Credentials"
 if gcloud auth print-access-token >/dev/null 2>&1; then
   ok "gcloud  $(gcloud config get-value account 2>/dev/null)"
 else
-  bad "gcloud token expired — run: make auth"
+  bad "gcloud token expired. Run: make auth"
 fi
 
 if gcloud auth application-default print-access-token >/dev/null 2>&1; then
   ok "application default credentials"
 else
-  bad "ADC expired — run: make auth  (this is what Terraform uses)"
+  bad "ADC expired. Run: make auth  (this is what Terraform uses)"
 fi
 
 step "Authorization"
@@ -70,7 +70,7 @@ if [[ -n "${TF_VAR_org_id:-}" ]]; then
   if gcloud organizations describe "$TF_VAR_org_id" >/dev/null 2>&1; then
     ok "can read organization $TF_VAR_org_id"
   else
-    bad "cannot read organization $TF_VAR_org_id — wrong ID, or missing organizationViewer"
+    bad "cannot read organization $TF_VAR_org_id. Wrong ID, or missing organizationViewer"
   fi
 
   # Stage 0 creates a folder directly under the org. Without this role it fails at the very
@@ -82,7 +82,7 @@ if [[ -n "${TF_VAR_org_id:-}" ]]; then
            | length > 0' >/dev/null 2>&1; then
     ok "have a folder-creating role at the organization"
   else
-    warn "could not confirm roles/resourcemanager.folderCreator — stage 0 may fail"
+    warn "could not confirm roles/resourcemanager.folderCreator; stage 0 may fail"
     warn "  grant with: gcloud organizations add-iam-policy-binding $TF_VAR_org_id \\"
     warn "    --member=\"user:\$(gcloud config get-value account)\" --role=\"roles/resourcemanager.folderCreator\""
   fi
@@ -92,7 +92,7 @@ if [[ -n "${TF_VAR_billing_account:-}" ]]; then
   if gcloud billing accounts describe "$TF_VAR_billing_account" >/dev/null 2>&1; then
     ok "can read billing account $TF_VAR_billing_account"
   else
-    bad "cannot read billing account $TF_VAR_billing_account — wrong ID, or missing roles/billing.user"
+    bad "cannot read billing account $TF_VAR_billing_account. Wrong ID, or missing roles/billing.user"
   fi
 fi
 
@@ -101,7 +101,7 @@ PROTECTED_IDS="${PROTECTED_IDS:-}"
 if [[ -n "${PROTECTED_IDS// /}" ]]; then
   ok "protected identifiers: $PROTECTED_IDS"
 else
-  warn "PROTECTED_IDS is empty — the protected-identifier check is inactive"
+  warn "PROTECTED_IDS is empty, so the protected-identifier check is inactive"
   warn "  org-node write blocking is unaffected"
 fi
 
@@ -113,7 +113,7 @@ if [[ -n "${ORG_WRITES_ALLOWED_FOR:-}" ]]; then
     warn "  correct only in a lab org containing nothing you would miss"
   else
     bad "ORG_WRITES_ALLOWED_FOR ($ORG_WRITES_ALLOWED_FOR) != TF_VAR_org_id (${TF_VAR_org_id:-unset})"
-    bad "  one of them is stale — refusing to guess which"
+    bad "  one of them is stale; refusing to guess which"
   fi
 else
   ok "org-node writes: blocked (folder-scoped mode)"
@@ -121,17 +121,17 @@ fi
 if [[ "${GCP_SEED_PROJECT:-}" != "" ]]; then
   for p in $PROTECTED_IDS; do
     if [[ "$GCP_SEED_PROJECT" == "$p" ]]; then
-      bad "GCP_SEED_PROJECT is a protected project — refusing"
+      bad "GCP_SEED_PROJECT is a protected project. Refusing"
     fi
   done
 fi
 if "$REPO_ROOT/scripts/guard-test.sh" >/dev/null 2>&1; then
   ok "guard self-test passes"
 else
-  bad "guard self-test FAILED — do not apply until scripts/guard.sh is fixed (make guard-test)"
+  bad "guard self-test FAILED. Do not apply until scripts/guard.sh is fixed (make guard-test)"
 fi
 
-# --- Verdict ------------------------------------------------------------------------------
+# Verdict
 
 if [[ $FAILED -eq 0 ]]; then
   printf '\n\033[32mPreflight clean.\033[0m\n'

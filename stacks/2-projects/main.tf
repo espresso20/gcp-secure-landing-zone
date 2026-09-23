@@ -1,15 +1,10 @@
-# Stage 2 — projects.
+# Stage 2: three projects, split by blast radius rather than by environment.
 #
-# Three projects, separated by blast radius rather than by environment, because a one-person
-# lab does not need dev/staging/prod but does need "the thing I can delete" kept away from "the
-# thing that holds my VPC".
-#
-#   net       Shared VPC host. Long-lived; stage 3 configures the network inside it.
+#   net       Shared VPC host. Stage 3 configures the network inside it.
 #   dev       Service project for workloads. Stage 4 builds here.
-#   sandbox   Deliberately disposable. Break things here.
+#   sandbox   Disposable.
 #
-# Projects are free. Only what runs inside them costs anything, which is why three is not
-# extravagant and why project-level separation is the cheapest security boundary GCP offers.
+# Projects themselves are free; only what runs in them bills.
 
 data "terraform_remote_state" "foundation" {
   backend = "gcs"
@@ -20,8 +15,7 @@ data "terraform_remote_state" "foundation" {
 }
 
 locals {
-  # Confirms stage 1 ran and agrees with us about which folder this is, rather than trusting
-  # config.env twice.
+  # Take the folder from stage 1's state rather than trusting config.env twice.
   folder_id = data.terraform_remote_state.foundation.outputs.folder_id
 
   base_labels = {
@@ -46,8 +40,6 @@ check "folder_matches_config" {
   }
 }
 
-# --- Shared VPC host ----------------------------------------------------------------------------
-
 module "net" {
   source = "../../modules/project"
 
@@ -64,8 +56,6 @@ module "net" {
     "servicenetworking.googleapis.com",
   ])
 }
-
-# --- Workload projects ---------------------------------------------------------------------------
 
 module "dev" {
   source = "../../modules/project"
@@ -103,7 +93,6 @@ module "sandbox" {
     "oslogin.googleapis.com",
   ])
 
-  # The point of a sandbox is that you can point it at things and see what breaks. Data access
-  # logs stay on anyway: knowing what you did is the reason to have a sandbox.
+  # Left on even here. Knowing what you broke is the point of a sandbox.
   enable_data_access_logs = true
 }

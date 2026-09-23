@@ -1,11 +1,7 @@
-# Project factory.
+# Project factory. Every project in this repo comes through here.
 #
-# Every project in this repo comes through here, so the things that are easy to forget — audit
-# config, no default network, a lien, labels, budget — are structural rather than remembered.
-#
-# Worth knowing for the exam: deleting a project does NOT free its project ID. The ID is burned
-# permanently. A lab you tear down and rebuild weekly will exhaust any fixed naming scheme,
-# which is what random_suffix is for.
+# Deleting a project does not free its project ID; the ID is burned permanently. Hence
+# random_suffix, for a lab that gets rebuilt often.
 
 resource "random_id" "suffix" {
   count       = var.random_suffix ? 1 : 0
@@ -24,12 +20,9 @@ resource "google_project" "this" {
   billing_account = var.billing_account
   labels          = var.labels
 
-  # CM-7, SC-7 — the default VPC ships with permissive rules (allow-internal, allow-ssh from
-  # 0.0.0.0/0, allow-rdp from 0.0.0.0/0). The org policy also blocks this; belt and braces,
-  # because the policy is only as good as its attachment point.
+  # The default VPC ships with allow-ssh and allow-rdp open to 0.0.0.0/0. CM-7, SC-7
   auto_create_network = false
 
-  # Terraform deletes projects happily, and in a lab that is the desired behaviour.
   deletion_policy = "DELETE"
 }
 
@@ -39,20 +32,15 @@ resource "google_project_service" "apis" {
   project = google_project.this.project_id
   service = each.value
 
-  # Leave APIs enabled on destroy. Disabling an API can cascade into dependent services in ways
-  # that make a destroy fail halfway and leave the project in a state neither Terraform nor a
-  # human can easily reason about.
+  # Disabling an API on destroy can cascade into dependent services and strand the destroy
+  # halfway through.
   disable_on_destroy         = false
   disable_dependent_services = false
 }
 
-# --- AU-2 / AU-12: audit configuration -------------------------------------------------------
-#
-# ADMIN_READ/ADMIN_WRITE are always on in GCP and cannot be disabled. DATA_READ and DATA_WRITE
-# are off by default, and they are the ones that tell you who read the data.
-#
-# This is authoritative: it replaces the project's whole audit config. That is the point — a
-# non-authoritative version would let a manual console change silently stay.
+# DATA_READ and DATA_WRITE are off by default in GCP and are the ones that record who read the
+# data. ADMIN_* are always on and cannot be disabled. Authoritative, so a console change to the
+# audit config gets reverted on the next apply. AU-2, AU-12
 
 resource "google_project_iam_audit_config" "all_services" {
   count = var.enable_data_access_logs ? 1 : 0
@@ -78,8 +66,6 @@ resource "google_project_iam_audit_config" "all_services" {
   depends_on = [google_project_service.apis]
 }
 
-# --- Shared VPC attachment --------------------------------------------------------------------
-
 resource "google_compute_shared_vpc_service_project" "attach" {
   count = var.shared_vpc_host_project != null ? 1 : 0
 
@@ -89,11 +75,7 @@ resource "google_compute_shared_vpc_service_project" "attach" {
   depends_on = [google_project_service.apis]
 }
 
-# --- Cost guard ---------------------------------------------------------------------------------
-#
-# Not a NIST control. It is here because an unattended lab with a forgotten GKE cluster is the
-# most likely way this repo actually hurts someone.
-
+# Not a NIST control. A forgotten GKE cluster is the likeliest way this repo costs real money.
 resource "google_billing_budget" "this" {
   count = var.budget_amount > 0 ? 1 : 0
 
@@ -119,8 +101,7 @@ resource "google_billing_budget" "this" {
     }
   }
 
-  # Forecasted spend catches the runaway before the money is gone, which the current-spend
-  # thresholds above structurally cannot.
+  # Forecast fires before the money is spent; the current-spend rules above cannot.
   threshold_rules {
     threshold_percent = 1.0
     spend_basis       = "FORECASTED_SPEND"

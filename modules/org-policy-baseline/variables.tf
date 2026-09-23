@@ -1,5 +1,5 @@
 variable "parent" {
-  description = "Resource to attach policies to: folders/<id>, projects/<id>, or — only with allow_organization_parent — organizations/<id>."
+  description = "Resource to attach policies to: folders/<id>, projects/<id>, or organizations/<id> when allow_organization_parent is set."
   type        = string
 
   validation {
@@ -13,12 +13,12 @@ variable "parent" {
   # single careless edit cannot open both.
   validation {
     condition     = !startswith(var.parent, "organizations/") || var.allow_organization_parent
-    error_message = "parent is an organization, but allow_organization_parent is false. Attaching org policy at the organization node makes every folder in that organization inherit it — including anything you did not build. Set this only in an organization that contains nothing you would miss, and see docs/org-setup.md."
+    error_message = "parent is an organization, but allow_organization_parent is false. Attaching org policy at the organization node makes every folder in that organization inherit it, including anything you did not build. Set this only in an organization that contains nothing you would miss, and see docs/org-setup.md."
   }
 }
 
 variable "allow_organization_parent" {
-  description = "Permit an organizations/<id> parent. False everywhere except the dedicated lab org — see docs/architecture.md, \"Running at the organization level\"."
+  description = "Permit an organizations/<id> parent. False everywhere except the dedicated lab org. See docs/architecture.md, \"Running at the organization level\"."
   type        = bool
   default     = false
 }

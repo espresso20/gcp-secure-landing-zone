@@ -1,25 +1,15 @@
-# Audit log collection for the playground folder — the AU control family.
+# Folder-scoped audit collection. AU control family.
 #
-# Two destinations, because they answer different questions:
+# Two destinations: a Cloud Logging bucket you can query (AU-6, AU-7) and a GCS archive that
+# survives someone deleting the log bucket (AU-9, AU-11).
 #
-#   Log bucket (Cloud Logging)  — queryable. This is where you actually investigate something.
-#                                 AU-6 (review and analysis), AU-7 (reduction and reporting).
-#   GCS archive                 — cheap, immutable-ish, long retention. This is the copy that
-#                                 survives someone deleting the log bucket. AU-9, AU-11.
-#
-# The sink is attached to the FOLDER with include_children, not to the organization. A folder
-# sink sees every project beneath it and nothing beside it, which is exactly the boundary this
-# repo is built around.
-#
-# Cost note: at lab volumes this is cents per month. GCS Standard is $0.020/GiB and the
-# lifecycle rule moves objects to Nearline at 30 days and Coldline at 90.
+# The sink attaches to the folder with include_children, so it sees every project beneath it
+# and nothing beside it. Cents per month at lab volume.
 
 locals {
   archive_bucket_name = "${var.prefix}-audit-archive-${var.folder_id}"
   log_bucket_id       = "${var.prefix}-audit-logs"
 }
-
-# --- Queryable retention -------------------------------------------------------------------
 
 resource "google_logging_project_bucket_config" "audit" {
   project        = var.project_id
@@ -28,12 +18,9 @@ resource "google_logging_project_bucket_config" "audit" {
   bucket_id      = local.log_bucket_id
   description    = "Folder-scoped audit log retention for the study playground (NIST AU-11)."
 
-  # Deliberately not locked. `locked = true` is permanent and would make this bucket outlive
-  # every attempt to tear the lab down.
+  # `locked = true` is permanent and would outlive every attempt to tear the lab down.
   locked = false
 }
-
-# --- Long-term archive ----------------------------------------------------------------------
 
 resource "google_storage_bucket" "audit_archive" {
   name     = local.archive_bucket_name
@@ -41,16 +28,15 @@ resource "google_storage_bucket" "audit_archive" {
   location = var.region
   labels   = var.labels
 
-  # AC-3 — IAM is the only access path. Matches the storage.uniformBucketLevelAccess policy.
+  # AC-3
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
-  # AU-9 — recover an object that was overwritten or deleted.
+  # AU-9: recover an object that was overwritten or deleted.
   versioning {
     enabled = true
   }
 
-  # AU-11 held cheaply.
   lifecycle_rule {
     condition { age = 30 }
     action {
@@ -72,7 +58,7 @@ resource "google_storage_bucket" "audit_archive" {
     action { type = "Delete" }
   }
 
-  # Only present when explicitly asked for — see variables.tf for why this is a trap in a lab.
+  # Only present when explicitly asked for. See variables.tf for why this is a trap in a lab.
   dynamic "retention_policy" {
     for_each = var.lock_retention ? [1] : []
     content {
@@ -81,12 +67,9 @@ resource "google_storage_bucket" "audit_archive" {
     }
   }
 
-  # force_destroy tracks the lock: a locked bucket cannot be force-destroyed anyway, and an
-  # unlocked lab bucket should not block `make down`.
+  # A locked bucket cannot be force-destroyed anyway.
   force_destroy = !var.lock_retention
 }
-
-# --- The sink itself -------------------------------------------------------------------------
 
 resource "google_logging_folder_sink" "audit_archive" {
   name             = "${var.prefix}-audit-to-gcs"
@@ -105,11 +88,7 @@ resource "google_storage_bucket_iam_member" "sink_writer" {
   member = google_logging_folder_sink.audit_archive.writer_identity
 }
 
-# --- Change detection --------------------------------------------------------------------------
-#
-# CM-3 / SI-4 — an asset feed emits a message on every resource and IAM policy change beneath
-# the folder. Folder-scoped, so it observes this subtree only.
-
+# Asset feed: a message on every resource and IAM change beneath the folder. CM-3, SI-4
 resource "google_pubsub_topic" "asset_changes" {
   name    = "${var.prefix}-asset-changes"
   project = var.project_id

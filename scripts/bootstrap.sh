@@ -5,15 +5,13 @@
 #   scripts/bootstrap.sh          create folder, seed project and state bucket, then migrate
 #   scripts/bootstrap.sh --migrate-only   just move stage 0's state into the bucket
 #
-# The awkward part of any Terraform foundation is that the stack which creates the state bucket
-# has nowhere to keep its own state while it does so. The sequence is:
+# The stack that creates the state bucket has nowhere to keep its own state while it does so:
 #
 #   1. Apply stage 0 with local state. Folder, seed project and bucket now exist.
 #   2. Write the resulting IDs into config.env, so nothing is transcribed by hand.
-#   3. Add a backend block to stage 0 and `init -migrate-state` into the bucket it just made.
+#   3. Add a backend block to stage 0 and `init -migrate-state` into the bucket it made.
 #
-# After step 3 the local state file is redundant. It is left on disk rather than deleted,
-# because deleting state automatically is not a habit worth building.
+# The local state file is then redundant. It is left on disk rather than deleted.
 
 set -euo pipefail
 
@@ -31,17 +29,13 @@ die()  { printf '\n\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 
 [[ -f "$CONFIG" ]] || die "config.env not found. Run: make init-config"
 
-# --- Apply -------------------------------------------------------------------------------------
-
 if [[ $MIGRATE_ONLY -eq 0 ]]; then
-  step "Stage 0 — folder, seed project, state bucket"
+  step "Stage 0: folder, seed project, state bucket"
   echo "    This runs on LOCAL state. That is expected; step 3 moves it."
   "$REPO_ROOT/scripts/tf.sh" 0-bootstrap apply
 
-  # --- Record ------------------------------------------------------------------------------------
-  #
-  # Read the values out of state rather than asking for them. A hand-copied project ID with a
-  # transposed character fails several minutes into stage 1 with an unhelpful 403.
+  # Read the values out of state rather than asking. A hand-copied project ID with one
+  # transposed character fails minutes into stage 1 with an unhelpful 403.
 
   step "Writing discovered IDs into config.env"
 
@@ -53,8 +47,7 @@ if [[ $MIGRATE_ONLY -eq 0 ]]; then
 
   cp "$CONFIG" "$CONFIG.bak"
 
-  # Replace the key if present, append if not. Done with a temp file rather than sed -i so the
-  # behaviour is the same on BSD and GNU.
+  # Temp file rather than sed -i, so BSD and GNU behave the same.
   set_key() {
     local key="$1" val="$2" tmp
     tmp="$(mktemp)"
@@ -82,14 +75,12 @@ if [[ $MIGRATE_ONLY -eq 0 ]]; then
   ok "previous config.env saved as config.env.bak"
 fi
 
-# --- Migrate -----------------------------------------------------------------------------------------
-
 set -a
 # shellcheck disable=SC1091
 source "$CONFIG"
 set +a
 
-[[ -n "${TF_VAR_state_bucket:-}" ]] || die "TF_VAR_state_bucket is empty — nothing to migrate into"
+[[ -n "${TF_VAR_state_bucket:-}" ]] || die "TF_VAR_state_bucket is empty, nothing to migrate into"
 
 step "Migrating stage 0 state into gs://$TF_VAR_state_bucket"
 

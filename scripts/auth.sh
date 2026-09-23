@@ -2,27 +2,19 @@
 #
 # Sign in to everything this stack needs, in one go.
 #
-# Two credentials, and they expire independently, which is why signing in always seems to
-# half-work:
+# Two credentials that expire independently, which is why signing in always seems to half-work:
 #
-#   1. gcloud user      — what `gcloud` commands use. `gcloud auth login`.
-#   2. ADC              — what Terraform uses. Different token, different expiry, and a source
-#                         of real confusion because `gcloud` can be working perfectly while
-#                         `terraform plan` returns 403.
+#   gcloud user   what gcloud commands use
+#   ADC           what Terraform uses. Different token, different expiry, so gcloud can work
+#                 perfectly while `terraform plan` returns 403.
 #
-# On top of the tokens it checks three things that are not credentials but fail the same way:
-# whether this account can see the organization named in config.env, whether it can see a
-# billing account, and — the important one once you have more than one org — whether ADC and
-# gcloud are actually the same identity.
+# It also checks three things that are not credentials but fail the same way: whether this
+# account can see the org named in config.env, whether it can see a billing account, and
+# whether ADC and gcloud are the same identity.
 #
-# That last one deserves saying plainly: named gcloud configurations are per-configuration,
-# but Application Default Credentials are GLOBAL. `gcloud config configurations activate lab`
-# changes what gcloud does and does not touch ADC at all. Terraform uses ADC. So it is entirely
-# possible to have gcloud pointed at one organization while Terraform is still authenticated
-# against another, with nothing on screen to suggest it. This script refuses to pass in that
-# state.
-#
-# By default this checks everything and only prompts for what is actually dead.
+# That last one matters because gcloud configurations are per-configuration while ADC is
+# global. `gcloud config configurations activate lab` does not touch ADC, and Terraform reads
+# ADC, so gcloud can point at one org while Terraform is authenticated against another.
 #
 #   scripts/auth.sh            sign in to whatever has expired
 #   scripts/auth.sh --check    report status and change nothing
@@ -39,8 +31,7 @@ for arg in "$@"; do
   case "$arg" in
     --check) MODE="check" ;;
     --force) MODE="force" ;;
-    # Prints the header comment and stops at the first line that is not one, so the help
-    # cannot drift out of step with the file the way a hardcoded line range does.
+    # Prints the header block, so --help cannot drift out of step with the file.
     -h|--help) awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
@@ -59,10 +50,8 @@ need() {
 }
 need gcloud
 
-# --- Configuration ------------------------------------------------------------------------
-#
-# config.env is optional here. Before `make bootstrap` has ever run there is no seed project
-# to point at, and refusing to authenticate until one exists would be a circular dependency.
+# config.env is optional here: before `make bootstrap` there is no seed project to point at,
+# and requiring one would be circular.
 
 # shellcheck disable=SC1091
 [[ -f "$REPO_ROOT/config.env" ]] && source "$REPO_ROOT/config.env"
@@ -72,11 +61,8 @@ PROTECTED_IDS="${PROTECTED_IDS:-}"
 WANT_CONFIG="${GCLOUD_CONFIGURATION:-}"
 WANT_ORG="${TF_VAR_org_id:-}"
 
-# --- gcloud configuration ------------------------------------------------------------------
-#
-# Set GCLOUD_CONFIGURATION in config.env when this checkout targets a specific org. Activating
-# it here means the rest of the script, and everything you run afterwards in this shell, is
-# talking to the account you meant.
+# Activating the configuration here means the rest of this script, and everything you run
+# afterwards in this shell, talks to the account you meant.
 
 if [[ -n "$WANT_CONFIG" ]]; then
   CURRENT_CONFIG="$(gcloud config configurations list --filter='is_active=true' \
@@ -95,39 +81,29 @@ if [[ -n "$WANT_CONFIG" ]]; then
   fi
 fi
 
-# The quota project must never be a protected one.
-#
-# A single-project version of this script can reasonably hardcode its project and set it active
-# on every run. This one must not. Pointing every subsequent gcloud and Terraform call at a
-# project that came from a config-file default is precisely the outcome this repo is arranged to
-# prevent, so the value is checked rather than assumed.
+# The quota project must never be a protected one, and the active gcloud project is left
+# alone: every stack names its project explicitly, and a shell silently repointed at the wrong
+# project fails by succeeding.
 for protected in $PROTECTED_IDS; do
   if [[ "$SEED_PROJECT" == "$protected" ]]; then
     echo "refusing to run: GCP_SEED_PROJECT is set to the protected project '$protected'" >&2
-    echo "fix config.env — this stack must never target it" >&2
+    echo "fix config.env; this stack must never target it" >&2
     exit 1
   fi
 done
 
-# --- Probes -------------------------------------------------------------------------------
-#
-# Each probe asks for something only a live credential can produce. Nothing here trusts a
-# config file, because a config file will happily describe a token that expired days ago.
+# Each probe asks for something only a live credential can produce. A config file will happily
+# describe a token that expired days ago.
 
-# Whether this shell can actually read from a human.
-#
-# Not `[[ -r /dev/tty ]]`: that returns true in shells where opening it then fails with "Device
-# not configured". The only reliable test is to open it.
+# Not `[[ -r /dev/tty ]]`: that returns true in shells where opening it then fails with
+# "Device not configured". The only reliable test is to open it.
 can_prompt() { (exec 3</dev/tty) 2>/dev/null; }
 
 probe_gcloud() { gcloud auth print-access-token >/dev/null 2>&1; }
 probe_adc()    { gcloud auth application-default print-access-token >/dev/null 2>&1; }
 
-# Which identity ADC actually belongs to.
-#
-# The credentials file does not record it — for user credentials it holds a refresh token and
-# nothing human-readable — so the only way to find out is to ask Google what the token is. This
-# is the check that catches "gcloud says one org, Terraform means another".
+# Which identity ADC belongs to. The credentials file does not record it (for user credentials it holds a refresh token and
+# nothing human-readable), so the only way to find out is to ask Google about the token.
 adc_identity() {
   local token
   token="$(gcloud auth application-default print-access-token 2>/dev/null)" || return 1
@@ -145,8 +121,6 @@ probe_billing() {
   [[ -n "$(gcloud billing accounts list --filter='open=true' \
              --format='value(name)' 2>/dev/null | head -1)" ]]
 }
-
-# --- Status -------------------------------------------------------------------------------
 
 step "Checking credentials"
 
@@ -168,8 +142,6 @@ fi
 if [[ "$MODE" == "auto" && $G_OK == 1 && $A_OK == 1 ]]; then
   step "Credentials are live."
 else
-  # --- Sign in ----------------------------------------------------------------------------
-
   if [[ "$MODE" == "force" || $G_OK == 0 ]]; then
     step "1/2  gcloud user account"
     gcloud auth login || { echo "gcloud auth login failed" >&2; exit 1; }
@@ -185,44 +157,33 @@ else
   fi
 fi
 
-# --- Quota project ------------------------------------------------------------------------
-#
-# ADC with no quota project produces a 403 that names a disabled service rather than a missing
-# setting — "SERVICE_DISABLED: Cloud Resource Manager API has not been used in project ..." —
-# and sends you off enabling APIs that are already enabled. Setting it is idempotent, so it
-# happens on every run.
-#
-# Unlike the original, the active gcloud project is deliberately left alone. Every Terraform
-# stack here names its project explicitly, and a shell silently repointed at the wrong project
-# is a worse failure than an expired token because it succeeds.
+# ADC with no quota project returns a 403 naming a disabled service rather than a missing
+# setting ("SERVICE_DISABLED: Cloud Resource Manager API has not been used in project ..."),
+# which sends you off enabling APIs that are already on. Idempotent, so it runs every time.
 
 if [[ -n "$SEED_PROJECT" ]]; then
   if gcloud auth application-default set-quota-project "$SEED_PROJECT" >/dev/null 2>&1; then
     ok "ADC quota project set to $SEED_PROJECT"
   else
-    bad "could not set the ADC quota project to $SEED_PROJECT — Terraform may 403"
+    bad "could not set the ADC quota project to $SEED_PROJECT; Terraform may 403"
   fi
 else
-  warn "GCP_SEED_PROJECT not set yet — skipping quota project (expected before 'make bootstrap')"
+  warn "GCP_SEED_PROJECT not set yet, skipping quota project (expected before 'make bootstrap')"
 fi
 
-# --- Authorization ------------------------------------------------------------------------
-#
-# A live token that cannot see the org is the failure mode this section exists for. It looks
-# exactly like success until stage 0 tries to create a folder.
+# A live token that cannot see the org looks exactly like success until stage 0 tries to
+# create a folder.
 
 step "Checking access"
 
-# --- Identity consistency ------------------------------------------------------------------
-#
-# Before asking what this account can see, establish that "this account" means one thing.
+# Before asking what this account can see, establish that it means one thing.
 
 GCLOUD_ACCT="$(gcloud config get-value account 2>/dev/null)"
 ADC_ACCT="$(adc_identity)"
 I_OK=1
 
 if [[ -z "$ADC_ACCT" ]]; then
-  warn "could not determine which identity ADC belongs to (offline?) — skipping the match check"
+  warn "could not determine which identity ADC belongs to (offline?), skipping the match check"
 elif [[ "$ADC_ACCT" == "$GCLOUD_ACCT" ]]; then
   ok "gcloud and ADC are both $GCLOUD_ACCT"
 else
@@ -234,10 +195,7 @@ fi
 probe_org     && O_OK=1 || O_OK=0
 probe_billing && B_OK=1 || B_OK=0
 
-# --- Org match ---------------------------------------------------------------------------------
-#
-# config.env names an org. If this identity cannot see that specific one, stop — whatever comes
-# next would build in the wrong place.
+# config.env names an org. If this identity cannot see that one, stop.
 
 M_OK=1
 if [[ -n "$WANT_ORG" ]]; then
@@ -261,10 +219,7 @@ else
   bad "billing account no open billing account visible to this account"
 fi
 
-# --- Verify -------------------------------------------------------------------------------
-#
-# Re-probe rather than assume. A login command can exit 0 having done nothing useful, and the
-# whole point of this script is to stop finding that out from a failed apply.
+# Re-probe rather than assume: a login command can exit 0 having done nothing useful.
 
 step "Verifying"
 
@@ -290,8 +245,8 @@ step "Not ready."
 
       gcloud auth application-default login
 
-  This overwrites ADC for every configuration, which is the whole problem — whichever org you
-  authenticate last is the one Terraform will build in, regardless of what gcloud reports.
+  This overwrites ADC for every configuration, so whichever org you authenticate last is the
+  one Terraform builds in, regardless of what gcloud reports.
 HINT
 
 [[ $M_OK == 0 ]] && cat <<'HINT'
@@ -312,7 +267,7 @@ HINT
 
 [[ $B_OK == 0 ]] && cat <<'HINT'
   No open billing account. Stage 0 cannot create projects without one. Check
-  https://console.cloud.google.com/billing — you need roles/billing.user on it.
+  https://console.cloud.google.com/billing. You need roles/billing.user on it.
 HINT
 
 exit 1

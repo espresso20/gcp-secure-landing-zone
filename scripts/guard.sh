@@ -1,27 +1,18 @@
 #!/usr/bin/env bash
 #
-# Blast-radius guard. Reads a saved Terraform plan and refuses it if it would write above the
-# playground folder or touch anything on the protected list.
+# Reads a saved Terraform plan and refuses it if it would write above the playground folder or
+# touch anything on the protected list.
 #
 #   scripts/guard.sh <stack-dir> <plan-file>
 #
-# The Makefile runs this between `plan` and `apply`, and `apply` does not happen if it fails.
+# scripts/tf.sh runs this between plan and apply; apply does not happen if it fails.
 #
-# Two independent layers, because they fail differently:
+#   Layer 1  org-node writes, refused unless ORG_WRITES_ALLOWED_FOR names that exact org
+#   Layer 2  any change mentioning a protected ID, before or after state
+#   Layer 3  deletes, counted and reported only
 #
-#   1. Organization-node writes — resources that write at an org, either because the type has
-#      no folder-scoped form or because their parent names one. Refused outright unless
-#      ORG_WRITES_ALLOWED_FOR names that exact organization. Catches the mistake of reaching
-#      for stock Enterprise Foundation Blueprint code, which attaches org policy and log sinks
-#      at the org, where every sibling folder inherits them, including ones it did not create.
-#
-#   2. Protected identifier — any planned change whose JSON so much as mentions a protected ID,
-#      in either its before or after state. Deliberately blunt. A false positive here costs a
-#      minute; a false negative costs an outage. Active regardless of layer 1.
-#
-# Layer 2 is the backstop, not the control. The real control is that no stack takes a parent
-# above `folders/<playground>` unless you have deliberately named an organization that has
-# nothing in it. See docs/architecture.md.
+# Layer 2 is a backstop. The control is that no stack takes a parent above the playground
+# folder. See docs/architecture.md.
 
 set -euo pipefail
 
@@ -30,15 +21,11 @@ PLAN_FILE="${2:?usage: guard.sh <stack-dir> <plan-file>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The environment beats config.env, so CI and scripts/guard-test.sh can drive this file
-# hermetically.
+# The environment beats config.env so tests and CI can drive this hermetically.
 #
-# `${VAR+set}` rather than `${VAR:-}`: it distinguishes "exported as empty" from "not exported
-# at all". That matters — a test asserting the default behaviour has to be able to say "empty,
-# and I mean it" without config.env quietly supplying a value underneath.
-#
-# Both are captured BEFORE sourcing, because sourcing would otherwise overwrite whatever the
-# caller just set. It silently did exactly that until the self-test caught it.
+# `${VAR+set}` rather than `${VAR:-}` distinguishes "exported as empty" from "not exported",
+# which a test asserting the default behaviour needs. Captured before sourcing, since sourcing
+# would otherwise overwrite what the caller just set.
 PROTECTED_IDS_WAS_SET="${PROTECTED_IDS+set}"
 PROTECTED_IDS_FROM_ENV="${PROTECTED_IDS:-}"
 ORG_ALLOW_WAS_SET="${ORG_WRITES_ALLOWED_FOR+set}"
@@ -50,11 +37,8 @@ ORG_ALLOW_FROM_ENV="${ORG_WRITES_ALLOWED_FOR:-}"
 [[ -n "$PROTECTED_IDS_WAS_SET" ]] && PROTECTED_IDS="$PROTECTED_IDS_FROM_ENV"
 PROTECTED_IDS="${PROTECTED_IDS:-}"
 
-# Which organization, if any, may receive writes at its own node.
-#
-# A specific numeric org ID, never a boolean. A boolean would be a switch you flip on for the
-# lab and forget to flip back; an ID only ever unlocks the one organization you named, so
-# pointing this repo at a different org re-locks it automatically with nothing to remember.
+# Which organization, if any, may receive writes at its own node. An ID rather than a boolean,
+# so pointing this repo at a different org re-locks it with nothing to remember.
 [[ -n "$ORG_ALLOW_WAS_SET" ]] && ORG_WRITES_ALLOWED_FOR="$ORG_ALLOW_FROM_ENV"
 ORG_WRITES_ALLOWED_FOR="${ORG_WRITES_ALLOWED_FOR:-}"
 
@@ -67,9 +51,8 @@ command -v jq >/dev/null 2>&1 || { echo "guard: jq is required" >&2; exit 1; }
 
 [[ -f "$STACK_DIR/$PLAN_FILE" ]] || { echo "guard: no plan at $STACK_DIR/$PLAN_FILE" >&2; exit 1; }
 
-# A .json argument is read as-is. That is how scripts/guard-test.sh exercises this file against
-# fixtures without needing a real cloud account, which in turn is why the guard can be trusted
-# after someone edits it.
+# A .json argument is read as-is, which is how guard-test.sh drives this without a cloud
+# account.
 if [[ "$PLAN_FILE" == *.json ]]; then
   JSON="$(cat "$STACK_DIR/$PLAN_FILE")"
 else
@@ -80,31 +63,18 @@ fail() { printf '\n\033[31mBLOCKED\033[0m  %s\n' "$1" >&2; }
 
 VIOLATIONS=0
 
-# --- Layer 1: writes at the organization node -----------------------------------------------
+# Layer 1: writes at the organization node.
 #
-# Two kinds of resource reach the org node, and the type alone only tells you about the first:
+# Two kinds of resource get here. Some types have no folder-scoped form (google_organization_iam_*,
+# org log sinks, custom constraints). Others take a parent that could name either, so the parent
+# decides. Both are collected with the org they target and checked against ORG_WRITES_ALLOWED_FOR:
+# unset refuses everything, set permits that one organization only.
 #
-#   a) Types with no folder-scoped form at all — google_organization_iam_*, org log sinks,
-#      custom constraints. If one is in the plan, the plan writes at an org.
-#   b) Types that take a parent and could go either way — google_org_policy_policy,
-#      google_essential_contacts_contact, google_tags_tag_key. The parent decides.
+# A resource whose target org cannot be determined is refused either way.
 #
-# Both are collected here with the organization they target, and then judged against
-# ORG_WRITES_ALLOWED_FOR:
-#
-#   unset            every org-node write is refused. This is the folder-scoped default and
-#                    what you want in any organization that holds anything else.
-#   set to an org ID org-node writes are permitted for THAT organization only. A write aimed
-#                    anywhere else is still refused, so a config pointed at the wrong org fails
-#                    closed rather than silently doing the thing it was built to prevent.
-#
-# A resource whose target organization cannot be determined is refused either way. Ambiguity
-# fails closed; that is the whole job.
-#
-# google_folder is deliberately exempt. Creating the playground folder necessarily names an
-# organization as its parent, and that is additive — it creates a child, it does not change
-# anything the organization already applies to its existing children. An earlier version of this
-# check blocked it and thereby made stage 1 permanently unrunnable.
+# google_folder is exempt. Creating the playground folder names an organization as its parent,
+# but that is additive and changes nothing for the org's existing children. Blocking it made
+# stage 1 unrunnable in an earlier version of this check.
 
 DENIED_TYPES='[
   "google_organization_iam_binding",
@@ -161,7 +131,7 @@ if [[ -n "$ORG_HITS" ]]; then
     if [[ -z "$ORG_WRITES_ALLOWED_FOR" ]]; then
       BAD_ORG+="  $addr  [$actions]  org=${orgid:-<undetermined>}"$'\n'
     elif [[ -z "$orgid" ]]; then
-      BAD_ORG+="  $addr  [$actions]  org could not be determined — refused"$'\n'
+      BAD_ORG+="  $addr  [$actions]  org could not be determined, refused"$'\n'
     elif [[ "$orgid" != "$ORG_WRITES_ALLOWED_FOR" ]]; then
       BAD_ORG+="  $addr  [$actions]  targets org $orgid, allowed org is $ORG_WRITES_ALLOWED_FOR"$'\n'
     fi
@@ -180,19 +150,17 @@ if [[ -n "$ORG_HITS" ]]; then
   fi
 fi
 
-# --- Layer 2: protected identifiers --------------------------------------------------------
+# Layer 2: protected identifiers.
 #
-# Blunt on purpose. Anything mutating that mentions a protected ID anywhere in its planned
-# values is refused, without trying to reason about whether the mention is harmless.
+# Blunt on purpose: any mutating change mentioning a protected ID is refused, without trying to
+# decide whether the mention is harmless.
 #
-# BOTH before and after are inspected. A delete has `after: null`, so the identity of what is
-# being destroyed exists only in `before` — and a delete is the single most dangerous action
-# this guard can be asked to approve. An earlier version checked `after` alone and cheerfully
-# permitted a plan that dropped a bucket out of the protected project; scripts/guard-test.sh
-# has a case for it.
+# Both before and after are inspected. A delete has `after: null`, so what is being destroyed
+# is named only in `before`. Checking `after` alone let a delete through; guard-test.sh covers
+# that case.
 
 if [[ -z "${PROTECTED_IDS// /}" ]]; then
-  printf '\033[33mnote\033[0m  PROTECTED_IDS is empty in config.env — the protected-identifier
+  printf '\033[33mnote\033[0m  PROTECTED_IDS is empty in config.env. The protected-identifier
 '
   printf '      check is inactive. Org-node write blocking (layers 1 and 1b) is unaffected.
 ' >&2
@@ -214,14 +182,12 @@ for protected in $PROTECTED_IDS; do
   fi
 done
 
-# --- Layer 3: deletes outside this stack's own resources -----------------------------------
-#
-# Advisory only. A destroy plan is full of deletes and that is the point, so this counts them
-# and prints the number rather than refusing.
+# Layer 3: deletes. Counted and reported, not refused; a destroy plan is meant to be full of
+# them.
 
 DELETES="$(jq -r '[ .resource_changes[]? | select(.change.actions | index("delete")) ] | length' <<<"$JSON")"
 
-# --- Verdict -------------------------------------------------------------------------------
+# Verdict
 
 if [[ $VIOLATIONS -gt 0 ]]; then
   cat >&2 <<'EOF'
@@ -240,7 +206,7 @@ config.env:
     ORG_WRITES_ALLOWED_FOR="123456789012"
 
 That unlocks org-node writes for that organization and no other. It is not a
-switch to flip on and off — pointing this repo at a different org re-locks it
+switch to flip on and off. Pointing this repo at a different org re-locks it
 with nothing for you to remember.
 
 See docs/architecture.md, "Running at the organization level".

@@ -1,9 +1,7 @@
-# Stage 3 — network. DESTROYABLE TIER.
+# Stage 3: network. Destroyable tier, and where the meter starts.
 #
-# This is where the meter starts. `make lab-down` tears down stage 3 and 4 together and leaves
-# the foundation standing, which is the arrangement that keeps idle cost under $20/month.
-#
-# Bring it back with `make lab-up`. It takes a few minutes and costs nothing to recreate.
+# `make lab-down` tears down stages 3 and 4 and leaves the foundation up. `make lab-up` brings
+# it back in a few minutes.
 
 data "terraform_remote_state" "projects" {
   backend = "gcs"
@@ -41,11 +39,8 @@ module "network" {
   labels     = local.labels
 }
 
-# --- Shared VPC attachment -------------------------------------------------------------------
-#
-# Lives here rather than in the project module because the host project must already be enabled
-# as a host, and that happens inside the network module. Attaching from stage 2 would be a
-# circular dependency across state files.
+# Attachment lives here, not in the project module: the host must be enabled as a host first,
+# which happens in the network module. Doing it from stage 2 would be circular across states.
 
 resource "google_compute_shared_vpc_service_project" "attached" {
   for_each = local.service_projects
@@ -56,11 +51,8 @@ resource "google_compute_shared_vpc_service_project" "attached" {
   depends_on = [module.network]
 }
 
-# --- Subnet-level IAM --------------------------------------------------------------------------
-#
-# AC-6 least privilege. Service project users get compute.networkUser on SPECIFIC subnets, not
-# on the whole host project. Granting it at the project level is the common shortcut and it
-# hands every service project access to every subnet, including ones it has no business in.
+# compute.networkUser is granted per subnet, not on the host project. The project-level grant
+# is the usual shortcut and it opens every subnet to every service project. AC-6
 
 resource "google_compute_subnetwork_iam_member" "dev_app_subnet" {
   project    = local.net_project
@@ -73,14 +65,8 @@ resource "google_compute_subnetwork_iam_member" "dev_app_subnet" {
   depends_on = [google_compute_shared_vpc_service_project.attached]
 }
 
-# --- Encryption keys ------------------------------------------------------------------------------
-#
-# SC-12, SC-13, SC-28. Rotation is automatic; 90 days is the common moderate-baseline figure.
-#
-# Be aware: a KMS key ring can never be deleted, and neither can a key. `make lab-down` will
-# leave these behind, and that is a GCP limitation rather than an oversight. Key versions cost
-# about $0.06/month each, so the residue is pennies — but it is permanent, which is worth
-# knowing before you run this in an org you care about.
+# KMS key rings and keys cannot be deleted in GCP, so `make lab-down` leaves these behind.
+# Key versions are about $0.06/month each. Rotation is automatic at 90 days. SC-12, SC-13, SC-28
 
 resource "google_kms_key_ring" "lab" {
   project  = local.net_project

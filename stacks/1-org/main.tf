@@ -1,27 +1,17 @@
-# Stage 1-org — organization-level baseline. LAB ORGANIZATION ONLY.
+# Organization-level baseline. LAB ORGANIZATION ONLY.
 #
-# Everything here writes at the organization node, which is precisely what the rest of this
-# repo is built to prevent. It exists because three capabilities have no folder-scoped form at
-# all, and they are the interesting ones:
+# Everything here writes at the organization node, which the rest of this repo exists to
+# prevent. It is here because three things have no folder-scoped form:
 #
-#   * Custom org policy constraints. Defined only at the organization. Without them you are
-#     limited to the constraints Google ships.
-#   * Organization-wide aggregated log sinks. A folder sink sees its own subtree; only an org
-#     sink sees folders created later by someone else.
-#   * Organization IAM, including the default grants every new domain user receives.
+#   * Custom org policy constraints, defined only at the organization.
+#   * Org-wide log sinks, which see folders created later; a folder sink does not.
+#   * Organization IAM, including the default grants new domain users receive.
 #
-# Running this in an organization that already holds workloads applies these constraints to them
-# immediately, by inheritance. That is not a risk to manage — it is the documented behaviour of
-# organization policy.
+# Applied to an organization that already holds workloads, these constraints reach them
+# immediately by inheritance.
 #
-# Three independent things must agree before this applies:
-#
-#   1. config.env sets ORG_WRITES_ALLOWED_FOR to this organization's numeric ID
-#   2. scripts/guard.sh sees that value and permits org-node writes for that org alone
-#   3. the check block below confirms Terraform was handed the same ID
-#
-# They live in different files and are set by different mechanisms, so no single careless edit
-# opens all three. See docs/org-setup.md for standing up an organization this is safe in.
+# Three things must agree first: ORG_WRITES_ALLOWED_FOR in config.env, the guard's check
+# against it, and the check block below. See docs/org-setup.md.
 
 locals {
   parent = "organizations/${var.org_id}"
@@ -32,8 +22,8 @@ locals {
   }
 }
 
-# Terraform's own refusal, independent of the guard. Belt and braces: the guard reads a plan
-# file and could in principle be bypassed by running terraform directly; this cannot.
+# Independent of the guard, which reads a plan file and could be bypassed by running
+# terraform directly.
 check "org_writes_were_authorized" {
   assert {
     condition     = var.org_writes_allowed_for == var.org_id
@@ -45,10 +35,7 @@ data "google_organization" "this" {
   organization = local.parent
 }
 
-# --- Organization-wide policy -------------------------------------------------------------
-#
-# Same module as the folder-scoped stage. The only difference is where it attaches, which is
-# the entire point of the comparison this repo is meant to support.
+# Same module as stage 1. The only difference is where it attaches.
 
 module "org_policies" {
   source = "../../modules/org-policy-baseline"
@@ -59,13 +46,8 @@ module "org_policies" {
   allowed_locations         = ["in:us-locations"]
 }
 
-# --- Custom constraints ----------------------------------------------------------------------
-#
-# The capability the folder-scoped variant cannot have at all. A custom constraint is a CEL
-# expression over a resource's own fields, evaluated at create and update time.
-#
-# This one refuses any VM whose machine type is not e2-*, which is a crude but genuine cost
-# control and demonstrates the shape: METHOD_TYPES, a resource type, and a condition.
+# A custom constraint is a CEL expression over a resource's own fields, evaluated on create and
+# update. This one refuses any machine type outside the e2 family.
 
 resource "google_org_policy_custom_constraint" "small_machines_only" {
   name         = "custom.labMachineTypesOnly"
@@ -90,11 +72,8 @@ resource "google_org_policy_policy" "small_machines_only" {
   }
 }
 
-# --- Organization-wide audit export ------------------------------------------------------------
-#
-# Unlike a folder sink, this captures folders that do not exist yet — including ones created by
-# someone else. In an org with more than one operator that difference is the whole argument for
-# doing this at the organization.
+# Captures folders that do not exist yet, including ones another operator creates. A folder
+# sink cannot.
 
 resource "google_storage_bucket" "org_audit" {
   name     = "${var.prefix}-org-audit-${var.org_id}"
@@ -144,17 +123,12 @@ resource "google_storage_bucket_iam_member" "org_sink_writer" {
   member = google_logging_organization_sink.audit.writer_identity
 }
 
-# --- Organization IAM ------------------------------------------------------------------------------
+# On creation an organization grants every domain user projectCreator and billing.creator at
+# the org node, so any identity in the domain can create a project and attach billing.
 #
-# AC-6. When an organization is created, every user in the domain is granted
-# roles/resourcemanager.projectCreator and roles/billing.creator at the org node. That is
-# convenient for a first-day org and wrong for anything past it: any identity in the domain can
-# create a project and attach billing to it.
-#
-# Removing those grants is an organization-level IAM change with no folder-scoped equivalent.
-# It is also destructive in a way worth understanding before you run it — including for you,
-# since your own ability to create projects comes from exactly this grant. The Terraform admin
-# identity must hold projectCreator explicitly, not by domain membership, before this applies.
+# Revoking that also revokes it for you, since your own ability to create projects comes from
+# the same grant. The admin identity needs projectCreator explicitly, not by domain membership,
+# before this applies. AC-6
 
 resource "google_organization_iam_member" "terraform_project_creator" {
   org_id = var.org_id
@@ -163,8 +137,6 @@ resource "google_organization_iam_member" "terraform_project_creator" {
 }
 
 data "google_client_openid_userinfo" "caller" {}
-
-# --- Incident routing ------------------------------------------------------------------------------
 
 resource "google_essential_contacts_contact" "org_security" {
   count = var.security_contact_email != null ? 1 : 0
