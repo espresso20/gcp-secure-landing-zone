@@ -1,0 +1,37 @@
+# Local configuration — account identifiers, not secrets, but not ours to publish.
+config.env
+
+# Terraform
+.terraform/
+# .terraform.lock.hcl is intentionally NOT ignored — provider checksums belong in git.
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Real variable files. Only the .example ones are tracked.
+*.auto.tfvars
+terraform.tfvars
+!*.tfvars.example
+
+# Build artifacts from the Makefile
+.build/
+
+# Credentials — nothing here should ever exist, but if it does, it stays local.
+*-sa-key.json
+*credentials*.json
+!config.env.example
+
+.DS_Store
+
+# Shared provider plugin cache (see scripts/tf.sh)
+.terraform-cache/
+config.env.bak
