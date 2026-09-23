@@ -10,9 +10,17 @@
 #                         of real confusion because `gcloud` can be working perfectly while
 #                         `terraform plan` returns 403.
 #
-# On top of the tokens it checks two things that are not credentials but fail the same way:
-# whether this account can see the organization, and whether it can see a billing account.
-# Without those, `make bootstrap` gets several minutes in and then dies.
+# On top of the tokens it checks three things that are not credentials but fail the same way:
+# whether this account can see the organization named in config.env, whether it can see a
+# billing account, and — the important one once you have more than one org — whether ADC and
+# gcloud are actually the same identity.
+#
+# That last one deserves saying plainly: named gcloud configurations are per-configuration,
+# but Application Default Credentials are GLOBAL. `gcloud config configurations activate lab`
+# changes what gcloud does and does not touch ADC at all. Terraform uses ADC. So it is entirely
+# possible to have gcloud pointed at one organization while Terraform is still authenticated
+# against another, with nothing on screen to suggest it. This script refuses to pass in that
+# state.
 #
 # By default this checks everything and only prompts for what is actually dead.
 #
@@ -61,6 +69,31 @@ need gcloud
 
 SEED_PROJECT="${GCP_SEED_PROJECT:-}"
 PROTECTED_IDS="${PROTECTED_IDS:-}"
+WANT_CONFIG="${GCLOUD_CONFIGURATION:-}"
+WANT_ORG="${TF_VAR_org_id:-}"
+
+# --- gcloud configuration ------------------------------------------------------------------
+#
+# Set GCLOUD_CONFIGURATION in config.env when this checkout targets a specific org. Activating
+# it here means the rest of the script, and everything you run afterwards in this shell, is
+# talking to the account you meant.
+
+if [[ -n "$WANT_CONFIG" ]]; then
+  CURRENT_CONFIG="$(gcloud config configurations list --filter='is_active=true' \
+                      --format='value(name)' 2>/dev/null | head -1)"
+  if [[ "$CURRENT_CONFIG" != "$WANT_CONFIG" ]]; then
+    if gcloud config configurations describe "$WANT_CONFIG" >/dev/null 2>&1; then
+      gcloud config configurations activate "$WANT_CONFIG" >/dev/null 2>&1 \
+        && ok "activated gcloud configuration '$WANT_CONFIG' (was '${CURRENT_CONFIG:-none}')"
+    else
+      echo "config.env names GCLOUD_CONFIGURATION='$WANT_CONFIG' but no such configuration exists." >&2
+      echo "Create it with:  gcloud config configurations create $WANT_CONFIG" >&2
+      exit 1
+    fi
+  else
+    ok "gcloud configuration '$WANT_CONFIG'"
+  fi
+fi
 
 # The quota project must never be a protected one.
 #
@@ -89,6 +122,20 @@ can_prompt() { (exec 3</dev/tty) 2>/dev/null; }
 
 probe_gcloud() { gcloud auth print-access-token >/dev/null 2>&1; }
 probe_adc()    { gcloud auth application-default print-access-token >/dev/null 2>&1; }
+
+# Which identity ADC actually belongs to.
+#
+# The credentials file does not record it — for user credentials it holds a refresh token and
+# nothing human-readable — so the only way to find out is to ask Google what the token is. This
+# is the check that catches "gcloud says one org, Terraform means another".
+adc_identity() {
+  local token
+  token="$(gcloud auth application-default print-access-token 2>/dev/null)" || return 1
+  [[ -n "$token" ]] || return 1
+  curl -s --max-time 10 "https://oauth2.googleapis.com/tokeninfo?access_token=${token}" 2>/dev/null \
+    | sed -n 's/.*"email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -1
+}
 
 # Not credentials, but they fail a `make bootstrap` just as dead.
 probe_org() {
@@ -166,8 +213,41 @@ fi
 
 step "Checking access"
 
+# --- Identity consistency ------------------------------------------------------------------
+#
+# Before asking what this account can see, establish that "this account" means one thing.
+
+GCLOUD_ACCT="$(gcloud config get-value account 2>/dev/null)"
+ADC_ACCT="$(adc_identity)"
+I_OK=1
+
+if [[ -z "$ADC_ACCT" ]]; then
+  warn "could not determine which identity ADC belongs to (offline?) — skipping the match check"
+elif [[ "$ADC_ACCT" == "$GCLOUD_ACCT" ]]; then
+  ok "gcloud and ADC are both $GCLOUD_ACCT"
+else
+  bad "gcloud is $GCLOUD_ACCT but ADC is $ADC_ACCT"
+  bad "  Terraform would run as $ADC_ACCT, not as the account gcloud shows."
+  I_OK=0
+fi
+
 probe_org     && O_OK=1 || O_OK=0
 probe_billing && B_OK=1 || B_OK=0
+
+# --- Org match ---------------------------------------------------------------------------------
+#
+# config.env names an org. If this identity cannot see that specific one, stop — whatever comes
+# next would build in the wrong place.
+
+M_OK=1
+if [[ -n "$WANT_ORG" ]]; then
+  if gcloud organizations describe "$WANT_ORG" >/dev/null 2>&1; then
+    ok "config.env org     $WANT_ORG is visible to this account"
+  else
+    bad "config.env names org $WANT_ORG, which this account cannot see"
+    M_OK=0
+  fi
+fi
 
 if [[ $O_OK == 1 ]]; then
   ok "organization    $(gcloud organizations list --format='value(displayName,name)' 2>/dev/null | head -1 | tr '\t' ' ')"
@@ -192,14 +272,35 @@ probe_gcloud && G_OK=1 || G_OK=0
 probe_adc    && A_OK=1 || A_OK=0
 report_creds
 
-if [[ $G_OK == 1 && $A_OK == 1 && $O_OK == 1 && $B_OK == 1 ]]; then
-  step "Ready. Terraform and gcloud will both work."
+if [[ $G_OK == 1 && $A_OK == 1 && $O_OK == 1 && $B_OK == 1 && $I_OK == 1 && $M_OK == 1 ]]; then
+  step "Ready. Terraform and gcloud will both work, as the same identity."
   exit 0
 fi
 
 step "Not ready."
 
 [[ $G_OK == 0 || $A_OK == 0 ]] && echo "  Tokens: try  scripts/auth.sh --force"
+
+[[ $I_OK == 0 ]] && cat <<'HINT'
+  gcloud and ADC are different identities. Named configurations are per-configuration;
+  Application Default Credentials are global and shared across all of them. Terraform reads
+  ADC, so it is currently authenticated as the wrong account.
+
+  Re-issue ADC as the account you actually want:
+
+      gcloud auth application-default login
+
+  This overwrites ADC for every configuration, which is the whole problem — whichever org you
+  authenticate last is the one Terraform will build in, regardless of what gcloud reports.
+HINT
+
+[[ $M_OK == 0 ]] && cat <<'HINT'
+  The organization named in config.env is not visible to this identity. Either config.env
+  belongs to a different checkout, or the wrong gcloud configuration is active.
+
+      gcloud config configurations list
+      gcloud organizations list
+HINT
 
 [[ $O_OK == 0 ]] && cat <<'HINT'
   Organization not visible. Either this account is outside the org, or it is missing

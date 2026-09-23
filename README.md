@@ -26,6 +26,17 @@ the playground folder or mentions a protected identifier. It is not skippable an
 
 Full reasoning: [docs/architecture.md](docs/architecture.md).
 
+**If you want the org-level build instead** — real EFB, custom constraints, org-wide sinks —
+do it in a *separate* organization with nothing in it, and unlock that one org by ID:
+
+```bash
+ORG_WRITES_ALLOWED_FOR="123456789012"   # that org and no other
+make org-up
+```
+
+It is not a boolean. Point the repo at a different org and it re-locks itself.
+[docs/org-setup.md](docs/org-setup.md) is the checklist for standing up an org it is safe in.
+
 ---
 
 ## Quickstart
@@ -68,6 +79,7 @@ organization
 | `2-projects` | net / dev / sandbox | Leave it up | $0 |
 | `3-network` | Shared VPC, subnets, NAT, DNS, hierarchical firewall, KMS | Destroyable | ~$33/mo |
 | `4-workload` | Shielded VM behind IAP, CMEK bucket | Destroyable | ~$2/mo |
+| `1-org` | Org policy, custom constraints, org-wide sink | **Lab org only, opt-in** | <$1/mo |
 
 `make cost` breaks this down. Cloud NAT is the single largest item; set `enable_nat = false` in
 `stacks/3-network` to drop it, at the cost of no outbound internet from private instances.
@@ -87,7 +99,9 @@ Everything runs from the repo root. No `cd`.
 | `make status` | what currently exists across all stages |
 | `make cost` | standing cost breakdown |
 | `make validate` / `make fmt` / `make lint` | quality |
-| `make guard-test` | prove the blast-radius guard still works (15 fixtures) |
+| `make org-check` | show which org, if any, is unlocked for org-node writes |
+| `make org-up` / `make org-down` | apply / destroy `1-org` — lab org only |
+| `make guard-test` | prove the blast-radius guard still works (23 fixtures) |
 | `make nuke` | everything, including stage 0. Asks you to type a word |
 
 `plan` and `apply` both re-plan and run the guard every time. Applying a stale plan file is how
@@ -114,8 +128,11 @@ modules/
   secure-network/             Shared VPC, NAT, hierarchical firewall, private DNS
 stacks/
   0-bootstrap/ 1-foundation/ 2-projects/ 3-network/ 4-workload/
+  1-org/                      organization-level baseline; refuses unless unlocked
 docs/
-  architecture.md             why folder-scoped, how the guard works, EFB deviations
+  architecture.md             why folder-scoped, how the guard works, EFB deviations,
+                              and how to run at the organization level instead
+  org-setup.md                checklist: domain, Cloud Identity, second org, two identities
   control-mapping.md          NIST 800-53 Moderate: implemented / inherited / not, with gaps
   exam-notes.md               ACE → PCA notes tied to the resources in this repo
 ```
@@ -124,7 +141,7 @@ docs/
 
 ## Requirements
 
-- `terraform` ≥ 1.5, `gcloud`, `jq`, `make`
+- `terraform` ≥ 1.9, `gcloud`, `jq`, `make`
 - An org where you hold `roles/resourcemanager.folderCreator` and `roles/billing.user`
 - Google provider `~> 8.4`
 

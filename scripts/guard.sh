@@ -9,17 +9,19 @@
 #
 # Two independent layers, because they fail differently:
 #
-#   1. Resource type — a denylist of resources that can only ever write at the organization
-#      node. Catches the mistake of reaching for stock Enterprise Foundation Blueprint code,
-#      which attaches org policy and log sinks at the org, where every sibling folder inherits
-#      them, including ones it did not create.
+#   1. Organization-node writes — resources that write at an org, either because the type has
+#      no folder-scoped form or because their parent names one. Refused outright unless
+#      ORG_WRITES_ALLOWED_FOR names that exact organization. Catches the mistake of reaching
+#      for stock Enterprise Foundation Blueprint code, which attaches org policy and log sinks
+#      at the org, where every sibling folder inherits them, including ones it did not create.
 #
-#   2. Protected identifier — any planned change whose JSON so much as mentions a protected ID.
-#      Deliberately blunt. A false positive here costs a minute; a false negative costs an
-#      outage.
+#   2. Protected identifier — any planned change whose JSON so much as mentions a protected ID,
+#      in either its before or after state. Deliberately blunt. A false positive here costs a
+#      minute; a false negative costs an outage. Active regardless of layer 1.
 #
-# Layer 2 is the backstop, not the control. The real control is that no stack takes a
-# parent above `folders/<playground>`. See docs/architecture.md.
+# Layer 2 is the backstop, not the control. The real control is that no stack takes a parent
+# above `folders/<playground>` unless you have deliberately named an organization that has
+# nothing in it. See docs/architecture.md.
 
 set -euo pipefail
 
@@ -28,15 +30,38 @@ PLAN_FILE="${2:?usage: guard.sh <stack-dir> <plan-file>}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# An explicitly exported PROTECTED_IDS beats config.env, so CI and scripts/guard-test.sh can
-# override it. Captured BEFORE sourcing, because sourcing would otherwise overwrite the value
-# the caller just set — which it silently did until the self-test caught it.
+# The environment beats config.env, so CI and scripts/guard-test.sh can drive this file
+# hermetically.
+#
+# `${VAR+set}` rather than `${VAR:-}`: it distinguishes "exported as empty" from "not exported
+# at all". That matters — a test asserting the default behaviour has to be able to say "empty,
+# and I mean it" without config.env quietly supplying a value underneath.
+#
+# Both are captured BEFORE sourcing, because sourcing would otherwise overwrite whatever the
+# caller just set. It silently did exactly that until the self-test caught it.
+PROTECTED_IDS_WAS_SET="${PROTECTED_IDS+set}"
 PROTECTED_IDS_FROM_ENV="${PROTECTED_IDS:-}"
+ORG_ALLOW_WAS_SET="${ORG_WRITES_ALLOWED_FOR+set}"
+ORG_ALLOW_FROM_ENV="${ORG_WRITES_ALLOWED_FOR:-}"
 
 # shellcheck disable=SC1091
 [[ -f "$REPO_ROOT/config.env" ]] && source "$REPO_ROOT/config.env"
 
-PROTECTED_IDS="${PROTECTED_IDS_FROM_ENV:-${PROTECTED_IDS:-}}"
+[[ -n "$PROTECTED_IDS_WAS_SET" ]] && PROTECTED_IDS="$PROTECTED_IDS_FROM_ENV"
+PROTECTED_IDS="${PROTECTED_IDS:-}"
+
+# Which organization, if any, may receive writes at its own node.
+#
+# A specific numeric org ID, never a boolean. A boolean would be a switch you flip on for the
+# lab and forget to flip back; an ID only ever unlocks the one organization you named, so
+# pointing this repo at a different org re-locks it automatically with nothing to remember.
+[[ -n "$ORG_ALLOW_WAS_SET" ]] && ORG_WRITES_ALLOWED_FOR="$ORG_ALLOW_FROM_ENV"
+ORG_WRITES_ALLOWED_FOR="${ORG_WRITES_ALLOWED_FOR:-}"
+
+if [[ -n "$ORG_WRITES_ALLOWED_FOR" && ! "$ORG_WRITES_ALLOWED_FOR" =~ ^[0-9]+$ ]]; then
+  echo "guard: ORG_WRITES_ALLOWED_FOR must be a bare numeric org ID, got '$ORG_WRITES_ALLOWED_FOR'" >&2
+  exit 1
+fi
 
 command -v jq >/dev/null 2>&1 || { echo "guard: jq is required" >&2; exit 1; }
 
@@ -55,14 +80,31 @@ fail() { printf '\n\033[31mBLOCKED\033[0m  %s\n' "$1" >&2; }
 
 VIOLATIONS=0
 
-# --- Layer 1: organization-mutating resource types ----------------------------------------
+# --- Layer 1: writes at the organization node -----------------------------------------------
 #
-# Unconditional. These resources have no folder-scoped form; if one is in the plan, the plan
-# writes at the org node.
+# Two kinds of resource reach the org node, and the type alone only tells you about the first:
 #
-# Note on google_org_policy_custom_constraint: custom constraints are defined only at the org,
-# so they are blocked here even though they are inert until a policy references them. That is a
-# real capability lost to the folder-only rule, and it is documented as such.
+#   a) Types with no folder-scoped form at all — google_organization_iam_*, org log sinks,
+#      custom constraints. If one is in the plan, the plan writes at an org.
+#   b) Types that take a parent and could go either way — google_org_policy_policy,
+#      google_essential_contacts_contact, google_tags_tag_key. The parent decides.
+#
+# Both are collected here with the organization they target, and then judged against
+# ORG_WRITES_ALLOWED_FOR:
+#
+#   unset            every org-node write is refused. This is the folder-scoped default and
+#                    what you want in any organization that holds anything else.
+#   set to an org ID org-node writes are permitted for THAT organization only. A write aimed
+#                    anywhere else is still refused, so a config pointed at the wrong org fails
+#                    closed rather than silently doing the thing it was built to prevent.
+#
+# A resource whose target organization cannot be determined is refused either way. Ambiguity
+# fails closed; that is the whole job.
+#
+# google_folder is deliberately exempt. Creating the playground folder necessarily names an
+# organization as its parent, and that is additive — it creates a child, it does not change
+# anything the organization already applies to its existing children. An earlier version of this
+# check blocked it and thereby made stage 1 permanently unrunnable.
 
 DENIED_TYPES='[
   "google_organization_iam_binding",
@@ -91,45 +133,51 @@ DENIED_TYPES='[
   "google_scc_posture_deployment"
 ]'
 
-TYPE_HITS="$(jq -r --argjson denied "$DENIED_TYPES" '
+# Emits one TAB-separated "address  actions  orgid" line per org-touching change. orgid is
+# empty when it could not be established.
+ORG_HITS="$(jq -r --argjson denied "$DENIED_TYPES" '
+  def orgid:
+    (.change.after // {}) as $a
+    | (($a.org_id // "") | tostring) as $direct
+    | if $direct != "" then $direct
+      else ([ ($a | tostring) | scan("organizations/([0-9]+)") ] | flatten | first // "")
+      end;
+
   [ .resource_changes[]?
     | select(.change.actions | any(. != "no-op" and . != "read"))
-    | select(.type as $t | $denied | index($t))
-    | "  \(.address)  [\(.change.actions | join(","))]"
-  ] | .[]' <<<"$JSON")"
-
-if [[ -n "$TYPE_HITS" ]]; then
-  fail "plan writes at the organization node"
-  echo "$TYPE_HITS" >&2
-  VIOLATIONS=$((VIOLATIONS + 1))
-fi
-
-# --- Layer 1b: resources that are folder-scoped OR org-scoped depending on a value ----------
-#
-# These take a parent, so the type alone says nothing. The parent does.
-#
-# google_folder is deliberately NOT checked here. Creating the playground folder necessarily
-# names the organization as its parent, and that is additive — it creates a child, it does not
-# change anything the org already applies to its other children. An earlier version of this
-# filter blocked it and thereby blocked stage 1 from ever running.
-
-PARENT_HITS="$(jq -r '
-  [ .resource_changes[]?
-    | select(.change.actions | any(. != "no-op" and . != "read"))
-    | select(.type | test("^google_(org_policy_policy|essential_contacts_contact|tags_tag_key)$"))
-    | . as $rc
-    | ( $rc.change.after // {} ) as $a
+    | select(.type != "google_folder")
     | select(
-        ( ($a.parent // "") | startswith("organizations/") ) or
-        ( ($a.name   // "") | startswith("organizations/") )
+        ((.type as $t | $denied | index($t)) != null)
+        or ((((.change.after // {}).parent // "") | tostring) | startswith("organizations/"))
+        or ((((.change.after // {}).name   // "") | tostring) | startswith("organizations/"))
       )
-    | "  \($rc.address)  parent=\($a.parent // $a.name // $a.org_id)"
+    | "\(.address)\t\(.change.actions | join(","))\t\(orgid)"
   ] | .[]' <<<"$JSON")"
 
-if [[ -n "$PARENT_HITS" ]]; then
-  fail "plan attaches a resource to the organization instead of the playground folder"
-  echo "$PARENT_HITS" >&2
-  VIOLATIONS=$((VIOLATIONS + 1))
+if [[ -n "$ORG_HITS" ]]; then
+  BAD_ORG=""
+  while IFS=$'\t' read -r addr actions orgid; do
+    [[ -z "$addr" ]] && continue
+    if [[ -z "$ORG_WRITES_ALLOWED_FOR" ]]; then
+      BAD_ORG+="  $addr  [$actions]  org=${orgid:-<undetermined>}"$'\n'
+    elif [[ -z "$orgid" ]]; then
+      BAD_ORG+="  $addr  [$actions]  org could not be determined — refused"$'\n'
+    elif [[ "$orgid" != "$ORG_WRITES_ALLOWED_FOR" ]]; then
+      BAD_ORG+="  $addr  [$actions]  targets org $orgid, allowed org is $ORG_WRITES_ALLOWED_FOR"$'\n'
+    fi
+  done <<<"$ORG_HITS"
+
+  if [[ -n "$BAD_ORG" ]]; then
+    if [[ -z "$ORG_WRITES_ALLOWED_FOR" ]]; then
+      fail "plan writes at the organization node, and no organization is allowed"
+    else
+      fail "plan writes at an organization other than the one allowed"
+    fi
+    printf '%s' "$BAD_ORG" >&2
+    VIOLATIONS=$((VIOLATIONS + 1))
+  else
+    ALLOWED_ORG_WRITES="$(printf '%s' "$ORG_HITS" | grep -c . || true)"
+  fi
 fi
 
 # --- Layer 2: protected identifiers --------------------------------------------------------
@@ -180,16 +228,31 @@ if [[ $VIOLATIONS -gt 0 ]]; then
 
 Nothing was applied.
 
-This stack is folder-scoped by design: every resource attaches at
-folders/<playground> or below, so that sibling folders cannot inherit anything
-it sets. A plan that writes at the org node
-breaks that guarantee for the whole organization at once.
+By default this stack is folder-scoped: every resource attaches at
+folders/<playground> or below, so sibling folders cannot inherit anything it
+sets. A plan that writes at the org node breaks that
+guarantee for the whole organization at once.
 
-If a resource genuinely has no folder-scoped form, it does not belong in this
-repo. See docs/architecture.md, "Deviations from the stock EFB".
+If you are deliberately building the org-level variant, do it in an organization
+that contains nothing you would miss, and set that organization's numeric ID in
+config.env:
+
+    ORG_WRITES_ALLOWED_FOR="123456789012"
+
+That unlocks org-node writes for that organization and no other. It is not a
+switch to flip on and off — pointing this repo at a different org re-locks it
+with nothing for you to remember.
+
+See docs/architecture.md, "Running at the organization level".
 EOF
   exit 1
 fi
 
 CHANGES="$(jq -r '[ .resource_changes[]? | select(.change.actions | any(. != "no-op" and . != "read")) ] | length' <<<"$JSON")"
-printf '\033[32mguard ok\033[0m  %s change(s), %s delete(s), 0 org-level writes\n' "$CHANGES" "$DELETES"
+
+if [[ -n "${ALLOWED_ORG_WRITES:-}" && "${ALLOWED_ORG_WRITES:-0}" -gt 0 ]]; then
+  printf '\033[32mguard ok\033[0m  %s change(s), %s delete(s), %s org-level write(s) to org %s\n' \
+    "$CHANGES" "$DELETES" "$ALLOWED_ORG_WRITES" "$ORG_WRITES_ALLOWED_FOR"
+else
+  printf '\033[32mguard ok\033[0m  %s change(s), %s delete(s), 0 org-level writes\n' "$CHANGES" "$DELETES"
+fi

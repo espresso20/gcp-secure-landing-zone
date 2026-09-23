@@ -14,7 +14,10 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 TF        ?= terraform
-STACKS    := 0-bootstrap 1-foundation 2-projects 3-network 4-workload
+# 1-org is deliberately NOT in FOUNDATION. It writes at the organization node and only runs
+# in an organization explicitly unlocked via ORG_WRITES_ALLOWED_FOR. `make up` must never
+# reach it by accident.
+STACKS    := 0-bootstrap 1-foundation 2-projects 3-network 4-workload 1-org
 FOUNDATION := 1-foundation 2-projects
 LAB       := 3-network 4-workload
 
@@ -30,7 +33,7 @@ C_OFF  := \033[0m
 
 .PHONY: help stacks init-config ids auth auth-check preflight bootstrap bootstrap-migrate \
         up down lab-up lab-down plan apply destroy output fmt fmt-check validate lint \
-        guard-test cost nuke clean docs status \
+        guard-test cost nuke clean docs status org-up org-down org-check \
         $(foreach s,$(STACKS),plan-$(s) apply-$(s) destroy-$(s) output-$(s) init-$(s))
 
 ## ---------------------------------------------------------------------------
@@ -138,6 +141,38 @@ nuke:
 	@read -r ans; [ "$$ans" = "nuke" ] || { printf "aborted\n"; exit 1; }
 	@$(MAKE) down
 	@scripts/tf.sh 0-bootstrap destroy
+
+## ---------------------------------------------------------------------------
+## Organization level
+## ---------------------------------------------------------------------------
+##
+## Refuses unless config.env sets ORG_WRITES_ALLOWED_FOR to the same org as TF_VAR_org_id.
+## scripts/tf.sh enforces that before init; the guard enforces it on the plan; the stack's own
+## check block enforces it inside Terraform. Three places, set two different ways.
+
+org-check:
+	@if [ -f config.env ]; then \
+	  . ./config.env; \
+	  if [ -n "$$ORG_WRITES_ALLOWED_FOR" ]; then \
+	    printf "$(C_YEL)org-node writes UNLOCKED for organization %s$(C_OFF)\n" "$$ORG_WRITES_ALLOWED_FOR"; \
+	    printf "config.env TF_VAR_org_id is %s\n" "$$TF_VAR_org_id"; \
+	    [ "$$ORG_WRITES_ALLOWED_FOR" = "$$TF_VAR_org_id" ] \
+	      && printf "$(C_GRN)they match$(C_OFF)\n" \
+	      || printf "$(C_RED)MISMATCH — every org target will refuse$(C_OFF)\n"; \
+	  else \
+	    printf "$(C_GRN)org-node writes blocked$(C_OFF) (folder-scoped mode)\n"; \
+	  fi; \
+	else printf "no config.env — run: make init-config\n"; fi
+
+org-up:
+	@printf "$(C_RED)stacks/1-org writes organization policy.$(C_OFF)\n"
+	@printf "Every folder in the target organization will inherit it, including any you did not build.\n"
+	@printf "Type the organization's numeric ID to continue: "
+	@read -r ans; . ./config.env; [ "$$ans" = "$$ORG_WRITES_ALLOWED_FOR" ] || { printf "$(C_RED)that is not the unlocked org id — aborted$(C_OFF)\n"; exit 1; }
+	@scripts/tf.sh 1-org apply
+
+org-down:
+	@scripts/tf.sh 1-org destroy
 
 ## ---------------------------------------------------------------------------
 ## Per-stack

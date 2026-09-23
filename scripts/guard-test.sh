@@ -32,10 +32,15 @@ fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
 # Runs the guard against a fixture and checks the exit code.
 #   expect_block <name> <json>   guard must REFUSE
 #   expect_allow <name> <json>   guard must PERMIT
+# ORG_ALLOW is exported on every call, empty by default, so each fixture states the org-mode
+# setting it is testing rather than inheriting whatever is in config.env.
+ORG_ALLOW=""
+
 run_guard() {
   local json="$1"
   printf '%s' "$json" > "$FIXTURES/plan.json"
-  PROTECTED_IDS="$FAKE_PROTECTED" "$REPO_ROOT/scripts/guard.sh" "$FIXTURES" "plan.json" >/dev/null 2>&1
+  PROTECTED_IDS="$FAKE_PROTECTED" ORG_WRITES_ALLOWED_FOR="$ORG_ALLOW" \
+    "$REPO_ROOT/scripts/guard.sh" "$FIXTURES" "plan.json" >/dev/null 2>&1
 }
 
 expect_block() {
@@ -54,6 +59,21 @@ expect_allow() {
   else
     fail "$name — guard BLOCKED this and should not have"
   fi
+}
+
+# Same two, with org mode enabled for a specific organization.
+expect_block_in_org() {
+  local name="$1" org="$2" json="$3"
+  local prev="$ORG_ALLOW"; ORG_ALLOW="$org"
+  expect_block "$name" "$json"
+  ORG_ALLOW="$prev"
+}
+
+expect_allow_in_org() {
+  local name="$1" org="$2" json="$3"
+  local prev="$ORG_ALLOW"; ORG_ALLOW="$org"
+  expect_allow "$name" "$json"
+  ORG_ALLOW="$prev"
 }
 
 printf '\n\033[1mBlast-radius guard self-test\033[0m\n\n'
@@ -126,6 +146,56 @@ expect_allow "a read-only data source referencing the org" '{
   "change":{"actions":["read"],"after":{"org_id":"123"}}}]}'
 
 expect_allow "an empty plan" '{"resource_changes":[]}'
+
+# --- Organization mode ---------------------------------------------------------------------
+#
+# ORG_WRITES_ALLOWED_FOR names one organization that may receive writes at its own node. The
+# property worth testing is not "org writes work" — it is that unlocking ONE organization does
+# not unlock any other, and that anything ambiguous still fails closed.
+#
+# LAB_ORG is the organization the fixtures pretend to have unlocked. OTHER_ORG stands in for any
+# organization that must stay untouched.
+
+LAB_ORG="111111111111"
+OTHER_ORG="999999999999"
+
+printf '\n\033[1morganization mode\033[0m  (ORG_WRITES_ALLOWED_FOR=%s)\n\n' "$LAB_ORG"
+
+expect_allow_in_org "org policy at the allowed org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_org_policy_policy.at_lab","type":"google_org_policy_policy",
+  "change":{"actions":["create"],"after":{"name":"organizations/111111111111/policies/compute.requireOsLogin","parent":"organizations/111111111111"}}}]}'
+
+expect_allow_in_org "org log sink in the allowed org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_logging_organization_sink.all","type":"google_logging_organization_sink",
+  "change":{"actions":["create"],"after":{"org_id":"111111111111"}}}]}'
+
+expect_allow_in_org "custom constraint in the allowed org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_org_policy_custom_constraint.x","type":"google_org_policy_custom_constraint",
+  "change":{"actions":["create"],"after":{"parent":"organizations/111111111111","name":"organizations/111111111111/customConstraints/custom.x"}}}]}'
+
+# The one that matters most. Unlocking one org must not unlock any other.
+expect_block_in_org "org policy aimed at a DIFFERENT org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_org_policy_policy.at_other","type":"google_org_policy_policy",
+  "change":{"actions":["create"],"after":{"name":"organizations/999999999999/policies/compute.vmExternalIpAccess","parent":"organizations/999999999999"}}}]}'
+
+expect_block_in_org "org log sink in a DIFFERENT org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_logging_organization_sink.other","type":"google_logging_organization_sink",
+  "change":{"actions":["create"],"after":{"org_id":"999999999999"}}}]}'
+
+# Ambiguity fails closed: an org-only resource type whose target org cannot be read.
+expect_block_in_org "org-only resource with no determinable org" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_organization_iam_member.mystery","type":"google_organization_iam_member",
+  "change":{"actions":["create"],"after":{"role":"roles/owner","member":"user:a@b.c"}}}]}'
+
+# Layer 2 is independent of layer 1. Org mode must not weaken the protected-ID check.
+expect_block_in_org "protected project, while org mode is enabled" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_project_iam_member.x","type":"google_project_iam_member",
+  "change":{"actions":["create"],"after":{"project":"protected-prod-example","role":"roles/owner"}}}]}'
+
+# Folder-scoped work keeps working unchanged in org mode.
+expect_allow_in_org "folder-scoped policy, while org mode is enabled" "$LAB_ORG" '{
+  "resource_changes":[{"address":"google_org_policy_policy.ok","type":"google_org_policy_policy",
+  "change":{"actions":["create"],"after":{"name":"folders/999/policies/x","parent":"folders/999"}}}]}'
 
 # --- Verdict ------------------------------------------------------------------------------------
 

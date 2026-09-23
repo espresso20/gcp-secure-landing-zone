@@ -81,6 +81,80 @@ inspected only `after` state, and a delete's identity lives in `before`; and it 
 discarded a caller-supplied `PROTECTED_IDS` because it sourced `config.env` afterwards. All
 three were invisible without the tests. A guard nobody tests is a guard nobody should rely on.
 
+## Running at the organization level
+
+Folder-scoping is the right default and the wrong permanent answer. Real Enterprise Foundation
+Blueprint deployments operate at the organization, three capabilities have no folder-scoped form
+at all, and the exam assumes org-level thinking. So the repo supports both — in different
+organizations.
+
+### What only the organization can do
+
+| Capability | Why folders cannot |
+|---|---|
+| **Custom org policy constraints** | `google_org_policy_custom_constraint` is defined only at the organization. Without it you are limited to the constraints Google ships |
+| **Organization-wide log sinks** | A folder sink sees its own subtree. Only an org sink captures folders that do not exist yet, including ones another operator creates |
+| **Default grant removal** | On creation, an organization grants every domain user `projectCreator` and `billing.creator` at the org node. Revoking that is org IAM |
+
+`stacks/1-org` implements all three.
+
+### How it is gated
+
+Not by a boolean. A boolean is a switch you turn on for the lab and forget to turn back off,
+and its failure mode is silent.
+
+Instead `ORG_WRITES_ALLOWED_FOR` names **one organization by numeric ID**. Org-node writes are
+permitted for that organization and refused for every other, so pointing this repo at a
+different org re-locks it with nothing for you to remember. A config that is merely *stale*
+fails closed rather than doing the thing it was built to prevent.
+
+Four independent checks, set in two different files by two different mechanisms, so no single
+careless edit opens them all:
+
+1. **`scripts/tf.sh`** refuses the `1-org` stack before `init`, if the value is unset or
+   disagrees with `TF_VAR_org_id`. Nothing reaches an API.
+2. **`scripts/guard.sh`** compares every org-node write in the plan against the allowed ID.
+   A resource whose target org cannot be determined is refused — ambiguity fails closed.
+3. **`modules/org-policy-baseline`** rejects an `organizations/` parent unless
+   `allow_organization_parent` is set, as a Terraform variable validation.
+4. **`stacks/1-org`** carries a `check` block asserting the two IDs match. The guard reads a
+   plan file and could be sidestepped by running `terraform` directly; this cannot.
+
+`make guard-test` proves the property that matters: unlocking the lab org does **not** unlock
+any other. Eight of the 23 fixtures exist for that alone.
+
+### Getting an organization it is safe in
+
+You need a second GCP organization, which means a second Cloud Identity account, which means a
+domain not already tied to one. A different TLD of a domain you own works — `example.dev` and
+`example.com` are unrelated as far as Google is concerned. A *subdomain* is riskier, since
+Google may entangle it with the parent's existing tenant.
+
+[docs/org-setup.md](org-setup.md) is the step-by-step, including the mistake that wastes the
+money: adding the new domain as a **secondary domain** of your existing Cloud Identity account
+rather than creating a new account. That absorbs the domain into the tenant you already have and
+produces no new organization at all.
+
+### Two identities, one gcloud
+
+Once there are two orgs there are two Google accounts, and exactly one `gcloud`. Named
+configurations keep them apart:
+
+```bash
+gcloud config configurations create lab
+gcloud config configurations activate lab
+```
+
+`GCLOUD_CONFIGURATION` in `config.env` names the one a checkout should use, and
+`scripts/auth.sh` activates it before anything else.
+
+The trap worth internalising: **configurations are per-configuration, ADC is global.**
+`gcloud auth application-default login` overwrites ADC for every configuration at once, and
+Terraform reads ADC. So `gcloud` can report one organization while Terraform is authenticated against
+another, with nothing on screen to suggest it. `auth.sh` resolves ADC's actual identity via
+the tokeninfo endpoint — the credentials file does not record it — and refuses to pass when the
+two disagree.
+
 ## Deviations from the stock EFB
 
 | Stock EFB | Here | Why |
@@ -90,7 +164,7 @@ three were invisible without the tests. A guard nobody tests is a guard nobody s
 | Long-lived network stage | `3-network` in the destroyable tier | Cloud NAT is ~$32/month and dominates the bill |
 | CI/CD pipeline via Cloud Build | `make` | You asked not to cd between stacks. A pipeline would be a different repo |
 | Terraform service accounts with impersonation | Direct user ADC | Impersonation needs a service account, which needs a project, which needs the bootstrap to have run. Worth adding later as a study exercise; it is genuinely how you would do this on a team |
-| Org-level custom constraints | Not available | Blocked by the folder-only rule. The one real capability lost — see control-mapping.md |
+| Org-level custom constraints | Available in `1-org` only | Blocked by the folder-only rule in the default mode. Implemented in `stacks/1-org`, which runs only in an explicitly unlocked organization |
 | Assured Workloads for the NIST control package | Not used | Needs an entitlement personal billing accounts generally lack, and it deliberately makes folders hard to delete — the opposite of what a playground needs |
 
 ## Stage layout and why it splits where it does

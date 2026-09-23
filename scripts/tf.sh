@@ -51,6 +51,34 @@ fi
 export TF_VAR_seed_project="${GCP_SEED_PROJECT:-}"
 export TF_VAR_state_bucket="${TF_VAR_state_bucket:-}"
 
+# Passed into stacks/1-org so Terraform can assert the match itself. The guard reads a plan
+# file and could be sidestepped by running terraform by hand; a check block inside the stack
+# cannot be.
+export TF_VAR_org_writes_allowed_for="${ORG_WRITES_ALLOWED_FOR:-}"
+
+# 1-org is the one stack that writes at the organization node. Refusing it here — before init,
+# before any API call — means the expensive path is never even attempted in an org that has not
+# been deliberately unlocked.
+if [[ "$STACK" == "1-org" && "$ACTION" != "fmt" && "$ACTION" != "validate" ]]; then
+  if [[ -z "${ORG_WRITES_ALLOWED_FOR:-}" ]]; then
+    die "stacks/1-org writes at the organization node, and ORG_WRITES_ALLOWED_FOR is unset in config.env.
+
+This stack applies organization policy, which every folder in the organization
+inherits — including anything you did not build. It is intended for a dedicated
+lab organization containing nothing you would miss.
+
+If that is what you have, set its numeric ID:
+
+    ORG_WRITES_ALLOWED_FOR=\"$( [[ -n "${TF_VAR_org_id:-}" ]] && echo "$TF_VAR_org_id" || echo "123456789012" )\"
+
+See docs/org-setup.md."
+  fi
+  if [[ -n "${TF_VAR_org_id:-}" && "$ORG_WRITES_ALLOWED_FOR" != "$TF_VAR_org_id" ]]; then
+    die "ORG_WRITES_ALLOWED_FOR ($ORG_WRITES_ALLOWED_FOR) does not match TF_VAR_org_id (${TF_VAR_org_id}).
+One of them is stale. Refusing rather than guessing which."
+  fi
+fi
+
 # Shared plugin cache. Five stacks, one download.
 export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-$REPO_ROOT/.terraform-cache}"
 mkdir -p "$TF_PLUGIN_CACHE_DIR"

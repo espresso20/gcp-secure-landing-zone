@@ -15,6 +15,9 @@ FAILED=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; FAILED=1; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
+# Loud, but not a failure. Org mode is a legitimate configuration; it just must never scroll
+# past unnoticed. Deliberately NOT implemented via bad(), which sets the exit code.
+loud() { printf '  \033[1;33m\u26a0\033[0m \033[1m%s\033[0m\n' "$1"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 step "Tooling"
@@ -95,7 +98,26 @@ fi
 
 step "Blast radius"
 PROTECTED_IDS="${PROTECTED_IDS:-}"
-ok "protected identifiers: $PROTECTED_IDS"
+if [[ -n "${PROTECTED_IDS// /}" ]]; then
+  ok "protected identifiers: $PROTECTED_IDS"
+else
+  warn "PROTECTED_IDS is empty — the protected-identifier check is inactive"
+  warn "  org-node write blocking is unaffected"
+fi
+
+if [[ -n "${ORG_WRITES_ALLOWED_FOR:-}" ]]; then
+  if [[ "$ORG_WRITES_ALLOWED_FOR" == "${TF_VAR_org_id:-}" ]]; then
+    loud "ORG MODE ENABLED for organization $ORG_WRITES_ALLOWED_FOR"
+    warn "  org-node writes permitted for this organization and no other"
+    warn "  every folder in it inherits whatever stacks/1-org sets"
+    warn "  correct only in a lab org containing nothing you would miss"
+  else
+    bad "ORG_WRITES_ALLOWED_FOR ($ORG_WRITES_ALLOWED_FOR) != TF_VAR_org_id (${TF_VAR_org_id:-unset})"
+    bad "  one of them is stale — refusing to guess which"
+  fi
+else
+  ok "org-node writes: blocked (folder-scoped mode)"
+fi
 if [[ "${GCP_SEED_PROJECT:-}" != "" ]]; then
   for p in $PROTECTED_IDS; do
     if [[ "$GCP_SEED_PROJECT" == "$p" ]]; then
